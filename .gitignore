@@ -1,0 +1,23 @@
+# compilación
+bin/
+obj/
+release/
+# material del juego o derivado (nunca se publica aquí)
+texturas_ia/
+referencia_sin_mod/
+respaldo_partidas/
+trabajo/
+herramientas/inventario.json
+herramientas/materiales.json
+herramientas/errores_inventario.txt
+# privado
+publicacion/
+artefacto/
+# pesados / entornos
+herramientas/venv*/
+herramientas/python/
+herramientas/modelos/
+herramientas/modelos_pt/
+herramientas/upscayl_dl/
+__pycache__/
+*.pyc
