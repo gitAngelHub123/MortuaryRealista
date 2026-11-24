@@ -79,6 +79,7 @@ namespace MortuaryRealista
             try
             {
                 if (c.StartsWith("esperar ")) { proximoComando = Time.unscaledTime + float.Parse(c.Substring(8), System.Globalization.CultureInfo.InvariantCulture); return; }
+                if (c.StartsWith("preset ")) { Opciones.Preset(c.Substring(7).Trim()); proximoComando = Time.unscaledTime + 0.5f; return; }
                 if (c.StartsWith("girar "))
                 {
                     // girar GRADOS SEGUNDOS: gira al jugador mientras la cola sigue (para probar el movimiento)
