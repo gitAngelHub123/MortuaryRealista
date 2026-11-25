@@ -30,6 +30,10 @@ def excluido(t):
     return False
 
 
+def es_pelo(n):
+    return any(k in n for k in ("Hair", "HAIR", "Transparency", "Brow_", "_Brow", "Beard", "Lash"))
+
+
 def rol_de(t):
     props = {u[0] for u in t["usos"]}
     if not props or excluido(t):
@@ -123,10 +127,21 @@ def comprimir_nivel(rgba_u8, fmt):
     return b"".join(partes)
 
 
+def conservar_cobertura(a, corte, objetivo):
+    """Escala el alfa de un mip para que la fracción de píxeles >= corte sea la del nivel 0
+    (si no, el pelo recortado por alfa se adelgaza y desaparece a distancia)."""
+    lo, hi = 0.0, 8.0
+    for _ in range(20):
+        m = (lo + hi) / 2
+        if float((np.clip(a * m, 0, 1) >= corte).mean()) < objetivo: lo = m
+        else: hi = m
+    return np.clip(a * hi, 0, 1)
+
+
 def postproceso(trabajo):
     """Corre en un proceso aparte: retroproyección, redimensión, mips, compresión y escritura."""
     try:
-        rol, up, orig, alfa, srgb, W, H, ruta = trabajo
+        rol, up, orig, alfa, srgb, W, H, alfa_up, corte, ruta = trabajo
         h, w = orig.shape[:2]
         e = up.shape[0] // h
         up = retroproyectar(up, orig, e)              # float 0..255, (h*e, w*e, 3)
@@ -134,15 +149,24 @@ def postproceso(trabajo):
             lin = a_lineal(np.clip(np.round(up), 0, 255).astype(np.uint8)) if srgb else up / 255.0
             if (W, H) != (w * e, h * e):
                 lin = np.clip(redim_f(lin, W, H), 0, 1)
-            if alfa is not None:
+            if alfa is not None and alfa_up is not None:
+                # pelo: el alfa (las hebras) también pasa por la IA y se corrige contra el original
+                am = alfa_up.astype(np.float32).mean(-1, keepdims=True)
+                am = retroproyectar(am, alfa[..., None], e)[..., 0] / 255.0
+                if am.shape != (H, W):
+                    am = redim_f(am[..., None], W, H)[..., 0]
+                a = np.clip(am, 0, 1).astype(np.float32)
+            elif alfa is not None:
                 a = np.array(Image.fromarray(alfa, "L").resize((W, H), Image.LANCZOS)).astype(np.float32) / 255.0
             else:
                 a = np.ones((H, W), np.float32)
             niveles = []
             cur, ca = lin, a
+            cob0 = float((alfa.astype(np.float32) / 255.0 >= corte).mean()) if corte and alfa is not None else None   # cobertura del ORIGINAL
             while True:
                 rgb8 = a_srgb(cur) if srgb else np.clip(np.round(cur * 255), 0, 255).astype(np.uint8)
-                niveles.append(np.dstack([rgb8, np.clip(np.round(ca * 255), 0, 255).astype(np.uint8)]))
+                ce = ca if cob0 is None else conservar_cobertura(ca, corte, cob0)
+                niveles.append(np.dstack([rgb8, np.clip(np.round(ce * 255), 0, 255).astype(np.uint8)]))
                 if cur.shape[0] == 1 and cur.shape[1] == 1:
                     break
                 cur = reducir2(cur); ca = reducir2(ca[..., None])[..., 0]
@@ -194,6 +218,8 @@ def main():
     ap.add_argument("--contar", action="store_true")
     ap.add_argument("--fase2", action="store_true", help="piel de cadáveres y brazos del jugador: color 2048 -> 4096")
     ap.add_argument("--fase3", action="store_true", help="el resto de texturas de 2048 (color y relieve): 2048 -> 4096")
+    ap.add_argument("--pelo", action="store_true", help="pelo, cejas y barbas: alfa por IA y mips que conservan cobertura")
+    ap.add_argument("--fase4", action="store_true", help="relieve (normales) de piel de todos los personajes: 2048 -> 4096")
     a = ap.parse_args()
 
     inv = json.load(open(os.path.join(BASE, "inventario.json")))["texturas"]
@@ -202,6 +228,32 @@ def main():
         for clave, t in inv.items():
             if rol_de(t) == "color" and max(t["ancho"], t["alto"]) == 2048 and any(k in t["nombre"] for k in FASE2):
                 sel[clave] = ("color", (t["ancho"] * 2, t["alto"] * 2))
+    elif a.pelo:
+        sel, cortes = {}, {}
+        mats = json.load(open(os.path.join(BASE, "materiales.json")))
+        corte_mat = {}
+        for m in mats:
+            c = m["tex"].get("_BaseColorMap")
+            f = m["floats"]
+            if c and f.get("_AlphaCutoffEnable") == 1.0 and f.get("_AlphaCutoff") is not None:
+                corte_mat.setdefault((m["nombre"], c[0]), []).append(f["_AlphaCutoff"])
+        for clave, t in inv.items():
+            mn = {u[2] for u in t["usos"]}
+            if rol_de(t) != "color" or not any(es_pelo(x) for x in mn) or any("Skin" in x for x in mn) \
+                    or (a.solo and not any(t["nombre"].startswith(x) for x in a.solo)):
+                continue
+            m = max(t["ancho"], t["alto"])
+            if m < 128 or m > 2048:
+                continue
+            f = min(2.0 if m == 2048 else 4.0, 4096 / m)
+            sel[clave] = ("color", (t["ancho"] * int(f), t["alto"] * int(f)))
+            cs = [c for x in mn for c in corte_mat.get((x, t["nombre"]), [])]
+            cortes[clave] = float(np.median(np.clip(cs, 0.02, 0.95))) if cs else 0.5
+    elif a.fase4:
+        sel = {}
+        for clave, t in inv.items():
+            if rol_de(t) == "normal" and max(t["ancho"], t["alto"]) == 2048 and any(k in t["nombre"] for k in FASE2):
+                sel[clave] = ("normal", (t["ancho"] * 2, t["alto"] * 2))
     elif a.fase3:
         sel = {}
         for clave, t in inv.items():
@@ -241,10 +293,10 @@ def main():
         # Se vuelve al orden nativo para que LoadRawTextureData y la huella coincidan con el juego.
         rgba = np.ascontiguousarray(np.array(t.image.convert("RGBA"))[::-1])
         sha = hashlib.sha1(rgba.tobytes()).hexdigest()[:20]
-        archivo = f"{sha}_{rol}_{W}x{H}.mtex"
+        archivo = f"{sha}_{rol}{'pelo' if a.pelo else ''}_{W}x{H}.mtex"
         ruta = os.path.join(a.salida, archivo)
         srgb = inv[clave]["espacio"] == 1
-        entrada = {"nombre": t.m_Name, "ancho": t.m_Width, "alto": t.m_Height, "rol": rol, "archivo": archivo,
+        entrada = {"pelo": bool(a.pelo), "nombre": t.m_Name, "ancho": t.m_Width, "alto": t.m_Height, "rol": rol, "archivo": archivo,
                    "W": W, "H": H, "srgb": srgb, "huella": huella(rgba), "clave": clave}
         manifiesto.write(json.dumps(entrada) + "\n"); manifiesto.flush()
         if archivo in hechos or os.path.exists(ruta):
@@ -262,7 +314,9 @@ def main():
         # si el destino es exactamente 2x, supermuestreo en GPU (4x y promedio 2x2)
         red = 2 if (W == rgb.shape[1] * 2 and H == rgb.shape[0] * 2) else 1
         up = esc.escalar_rgb(rgb, reducir=red)
-        pendientes.append(pool.submit(postproceso, (rol, up, rgb, alfa, srgb, W, H, ruta)))
+        alfa_up = esc.escalar_rgb(np.ascontiguousarray(np.dstack([alfa] * 3)), reducir=red) if (a.pelo and alfa is not None) else None
+        corte = cortes.get(clave) if a.pelo else None
+        pendientes.append(pool.submit(postproceso, (rol, up, rgb, alfa, srgb, W, H, alfa_up, corte, ruta)))
         n += 1
         print(f"[{n}] {t.m_Name} {t.m_Width}x{t.m_Height} -> {W}x{H} {rol} ({time.time()-t0:.0f}s)", flush=True)
         # limitar memoria: no acumular más de 2x procesos en cola

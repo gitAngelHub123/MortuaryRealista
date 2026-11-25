@@ -12,11 +12,13 @@ namespace MortuaryRealista
     {
         internal static ConfigEntry<bool> Activar, SombrasContacto, SSR, SSGI, RegistroFPS, MicroSombras, LuzInterior;
         internal static ConfigEntry<int> Tonemapping;
+        internal static ConfigEntry<string> ColorOriginalCine;
+        static bool enCineOriginal; static float proximaCine;
         internal static ConfigEntry<float> LuzIndirecta, LuzReflejos, SSGILimite, SSGIRadio;
         internal static ConfigEntry<bool> SSGIFiltro;
         internal static ConfigEntry<int> FiltroSombras, CalidadAO, MuestrasPiel;
         internal static float FpsActual;
-        internal static ConfigEntry<float> LongitudContacto, IntensidadAO, RadioAO;
+        internal static ConfigEntry<float> LongitudContacto, IntensidadAO, RadioAO, AOLuzDirecta;
 
         static AmbientOcclusion ao;
         static ContactShadows contacto;
@@ -40,6 +42,7 @@ namespace MortuaryRealista
             SombrasContacto = cfg.Bind("Realismo", "SombrasContacto", false, "Sombras finas de contacto. OJO: en este juego dejan un tramado/moaré en zonas iluminadas");
             LongitudContacto = cfg.Bind("Realismo", "LongitudContacto", 0.25f, "Largo de las sombras de contacto en metros");
             IntensidadAO = cfg.Bind("Realismo", "IntensidadAO", 1.0f, "-1 = no tocar; oclusión ambiental (oscurece esquinas y rincones)");
+            AOLuzDirecta = cfg.Bind("Realismo", "AOLuzDirecta", 0.5f, "-1 = no tocar; cuánto oscurece la oclusión también la luz de las lámparas (0 a 1). En HDRP la oclusión solo afecta la luz ambiental, y estos interiores se iluminan casi todo con lámparas");
             RadioAO = cfg.Bind("Realismo", "RadioAO", 1.5f, "-1 = no tocar; radio de la oclusión ambiental en metros");
             CalidadAO = cfg.Bind("Realismo", "CalidadAO", 2, "-1 = no tocar; 0 Baja, 1 Media, 2 Alta");
             SSR = cfg.Bind("Realismo", "ReflejosSSR", true, "Reflejos en pantalla de alta calidad (suelos, azulejos, metal)");
@@ -47,6 +50,7 @@ namespace MortuaryRealista
             RegistroFPS = cfg.Bind("Realismo", "RegistroFPS", false, "Escribe los FPS medios en el log cada 10 s");
             MuestrasPiel = cfg.Bind("Realismo", "MuestrasPiel", 80, "Calidad de la dispersión de luz en la piel (muestras por píxel; el juego usa su nivel de calidad). 0 = no tocar");
             LuzInterior = cfg.Bind("Realismo", "LuzInterior", true, "Punto 6: tonemapping y más luz rebotada en interiores");
+            ColorOriginalCine = cfg.Bind("Realismo", "ColorOriginalCinematicas", "Tutorial", "Cinemáticas (nombre del asset de PlayableDirector, separadas por coma) en las que se quita el mapeo tonal para conservar los colores cálidos del juego (piel de la protagonista en la llegada en auto). Vacío = nunca");
             Tonemapping = cfg.Bind("Realismo", "Tonemapping", 1, "0 = ninguno (como el juego), 1 = Neutral (recupera luces quemadas), 2 = ACES (cine, más contraste)");
             LuzIndirecta = cfg.Bind("Realismo", "LuzIndirecta", 1.35f, "Multiplicador de la luz rebotada (ambiente) en interiores; 1 = como el juego");
             SSGIFiltro = cfg.Bind("Realismo", "FiltroRuidoSSGI", true, "Filtro de ruido reforzado para la luz rebotada (quita los puntitos brillantes)");
@@ -60,7 +64,7 @@ namespace MortuaryRealista
         public static bool AjustarAsset(ref RenderPipelineSettings st)
         {
             if (!Activar.Value) return false;
-            bool antes = st.supportSSAO, antesSsr = st.supportSSR, antesSsgi = st.supportSSGI;
+            bool antes = st.supportSSAO, antesSsrT = st.supportSSRTransparent, antesSsr = st.supportSSR, antesSsgi = st.supportSSGI;
             var antesFiltro = st.hdShadowInitParams.shadowFilteringQuality;
             Plugin.Log.LogInfo("ASSET ANTES: SSAO=" + st.supportSSAO + " SSR=" + st.supportSSR + " SSGI=" + st.supportSSGI +
                 " volumétricos=" + st.supportVolumetrics + " filtroSombras=" + st.hdShadowInitParams.shadowFilteringQuality +
@@ -69,6 +73,7 @@ namespace MortuaryRealista
                 " sssMuestras=" + st.sssSampleBudget.ToString());
             st.supportSSAO = true;
             st.supportSSR = true;
+            if (Materiales.VidrioReflejos.Value) st.supportSSRTransparent = true;   // reflejos en vidrios (sin efecto visible medido)
             st.supportSSGI = true;   // siempre soportado: así la luz rebotada se puede encender en vivo desde el menú
             Plugin.Log.LogInfo("ASSET PIEL: sss=" + st.supportSubsurfaceScattering);
             if (FiltroSombras.Value >= 0)
@@ -77,7 +82,7 @@ namespace MortuaryRealista
                 sp.shadowFilteringQuality = (HDShadowFilteringQuality)Math.Min(3, FiltroSombras.Value);
                 st.hdShadowInitParams = sp;
             }
-            return antes != st.supportSSAO || antesSsr != st.supportSSR || antesSsgi != st.supportSSGI ||
+            return antes != st.supportSSAO || antesSsr != st.supportSSR || antesSsrT != st.supportSSRTransparent || antesSsgi != st.supportSSGI ||
                    antesFiltro != st.hdShadowInitParams.shadowFilteringQuality;
         }
 
@@ -103,6 +108,7 @@ namespace MortuaryRealista
             ao.active = on && CalidadAO.Value >= 0;
             if (IntensidadAO.Value >= 0) ao.intensity.Override(IntensidadAO.Value);
             if (RadioAO.Value >= 0) ao.radius.Override(RadioAO.Value);
+            if (AOLuzDirecta.Value >= 0) ao.directLightingStrength.Override(Mathf.Clamp01(AOLuzDirecta.Value));
             if (CalidadAO.Value >= 0) ao.quality.Override(Math.Min(2, CalidadAO.Value));
             contacto.active = on && SombrasContacto.Value;
             contacto.enable.Override(SombrasContacto.Value);
@@ -133,7 +139,7 @@ namespace MortuaryRealista
             micro.enable.Override(true);
             micro.opacity.Override(1f);
             bool luz = on && LuzEncendida && LuzInterior.Value;
-            tone.active = on && LuzEncendida && Tonemapping.Value > 0;
+            tone.active = on && LuzEncendida && Tonemapping.Value > 0 && !enCineOriginal;
             tone.mode.Override(Tonemapping.Value == 2 ? TonemappingMode.ACES : Tonemapping.Value == 1 ? TonemappingMode.Neutral : TonemappingMode.None);
             indirecta.active = luz;
             indirecta.indirectDiffuseLightingMultiplier.Override(LuzIndirecta.Value);
@@ -151,9 +157,27 @@ namespace MortuaryRealista
                 if (firma != firmaEscena) { firmaEscena = firma; proximaLuces = Time.unscaledTime + 3f; }
                 if (proximaLuces > 0 && Time.unscaledTime >= proximaLuces) { proximaLuces = -1f; AjustarLuces(); }
                 if (!frameHecho) AjustarFrameSettings();
+                if (Time.unscaledTime >= proximaCine) { proximaCine = Time.unscaledTime + 0.25f; RevisarCine(); }
                 if (!diagnosticoHecho && Camera.main != null) Diagnostico();
             }
             catch (Exception e) { Plugin.Log.LogWarning("Realismo: " + e.Message); proximaLuces = -1f; frameHecho = true; }
+        }
+
+        // Mientras corre una cinemática de la lista, el mapeo tonal se apaga (colores del juego); al terminar vuelve solo
+        static void RevisarCine()
+        {
+            bool ahora = false;
+            string lista = ColorOriginalCine.Value;
+            if (!string.IsNullOrWhiteSpace(lista))
+                foreach (var d in UnityEngine.Object.FindObjectsOfType<UnityEngine.Playables.PlayableDirector>())
+                {
+                    if (d == null || d.state != UnityEngine.Playables.PlayState.Playing || d.playableAsset == null) continue;
+                    foreach (var n in lista.Split(',')) if (n.Trim().Length > 0 && d.playableAsset.name == n.Trim()) { ahora = true; break; }
+                    if (ahora) break;
+                }
+            if (ahora == enCineOriginal) return;
+            enCineOriginal = ahora; Aplicar();
+            Plugin.Log.LogInfo("Realismo: colores originales en cinemática " + (ahora ? "ACTIVOS" : "terminados"));
         }
 
         static bool frameOrigGuardado; static SssQualityMode sssModoOrig; static int sssMuestrasOrig;
@@ -168,7 +192,7 @@ namespace MortuaryRealista
                 " SSGI=" + fs.IsEnabled(FrameSettingsField.SSGI) + " contacto=" + fs.IsEnabled(FrameSettingsField.ContactShadows) +
                 " volumétricos=" + fs.IsEnabled(FrameSettingsField.Volumetrics));
             fs.SetEnabled(FrameSettingsField.SSAO, true);
-            if (SSR.Value) fs.SetEnabled(FrameSettingsField.SSR, true);
+            if (SSR.Value) { fs.SetEnabled(FrameSettingsField.SSR, true); if (Materiales.VidrioReflejos.Value) fs.SetEnabled(FrameSettingsField.TransparentSSR, true); }
             if (SSGI.Value) fs.SetEnabled(FrameSettingsField.SSGI, true);
             if (SombrasContacto.Value) fs.SetEnabled(FrameSettingsField.ContactShadows, true);
             Plugin.Log.LogInfo("PIEL ANTES: sss=" + fs.IsEnabled(FrameSettingsField.SubsurfaceScattering) + " transmisión=" + fs.IsEnabled(FrameSettingsField.Transmission) +

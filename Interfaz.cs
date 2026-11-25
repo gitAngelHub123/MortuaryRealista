@@ -59,7 +59,9 @@ namespace MortuaryRealista
             Lis(T("NIEBLA DEL MOD", "MOD FOG"), Opciones.NieblaVolumetrica, Tl(new[] { "NINGUNA", "LIGERA", "DENSA" }, new[] { "NONE", "LIGHT", "DENSE" }), V012, T("Niebla en el aire por la que se ve pasar la luz de lámparas y linterna (el juego no trae).", "Fog in the air that lamp and flashlight beams shine through (the game has none).")),
             Bar(T("LUZ DEL PORTAPAPELES", "CLIPBOARD LIGHT"), Portapapeles.Lumenes, 0.1f, 10f, "0.0", T("Cuánto brilla el papel del portapapeles mientras lo sostienes.", "How much the clipboard paper glows while you hold it.")),
             Bar(T("HACES DE LUZ", "LIGHT SHAFTS"), Opciones.HacesLuz, 0f, 3f, "0.00", T("Cuánto se ven los haces de las lámparas en la niebla (1 = normal). Necesita NIEBLA DEL MOD ligera o densa.", "How visible lamp beams are in the fog (1 = normal). Needs MOD FOG light or dense.")),
-            Cas(T("TEXTURAS IA 4K", "AI 4K TEXTURES"), TexturasIA.Activar, T("Paredes, suelos, piel, ropa, madera y objetos escalados con IA (hasta 4096 px). Necesita el pack de texturas.", "Walls, floors, skin, clothes, wood and props upscaled with AI (up to 4096 px). Needs the texture pack.")),
+            Cas(TexturasIA.PackInstalado ? T("TEXTURAS IA 4K", "AI 4K TEXTURES") : T("TEXTURAS IA 4K (SIN PACK)", "AI 4K TEXTURES (NO PACK)"), TexturasIA.Activar, TexturasIA.PackInstalado
+                ? T("Paredes, suelos, piel, ropa, madera y objetos escalados con IA (hasta 4096 px).", "Walls, floors, skin, clothes, wood and props upscaled with AI (up to 4096 px).")
+                : T("El pack de texturas IA no está instalado: esta casilla no hace nada. Todo lo demás del mod funciona sin él.", "The AI texture pack is not installed: this checkbox does nothing. Everything else in the mod works without it.")),
             Cas(T("ILUMINACIÓN GLOBAL", "GLOBAL ILLUMINATION"), Realismo.SSGI, T("Luz rebotada en paredes y suelos. En este juego deja puntitos brillantes que parpadean: mejor apagada.", "Bounce light on walls and floors. In this game it leaves flickering bright dots: better left off.")),
             Cas(T("REFLEJOS EN PANTALLA", "SCREEN REFLECTIONS"), Realismo.SSR, T("Reflejos en charcos, ventanas, metal y suelos (el juego los traía apagados).", "Reflections on puddles, windows, metal and floors (off in the base game).")),
             Cas(T("FILTRO DE RUIDO", "NOISE FILTER"), Realismo.SSGIFiltro, T("Reduce los puntitos brillantes que deja la luz rebotada en paredes y pilares.", "Reduces the bright dots bounce light leaves on walls and pillars.")),
@@ -71,9 +73,22 @@ namespace MortuaryRealista
             Lis(T("DISPERSIÓN EN LA PIEL", "SKIN SCATTERING"), Realismo.MuestrasPiel, new[] { JUEGO, T("ALTA", "HIGH"), "ULTRA", T("MÁXIMA", "MAX") }, new[] { 0, 40, 80, 160 }, T("Luz que atraviesa la piel: muestras por píxel.", "Light passing through skin: samples per pixel.")),
             Bar(T("NIVEL DE DETALLE", "LEVEL OF DETAIL"), Plugin.SesgoLod, 1f, 4f, "0.0", T("Modelos detallados a más distancia (1 = como el juego).", "Detailed models at a greater distance (1 = game default).")),
             Bar(T("DISTANCIA DE DIBUJADO", "DRAW DISTANCE"), DistanciaDibujado(), 1f, 3f, "0.0", T("Multiplica cuán lejos se dibujan objetos y sombras.", "Multiplies how far objects and shadows are drawn.")),
+            Bar(T("SOMBRA EN RINCONES", "CORNER SHADING"), Realismo.AOLuzDirecta, 0f, 1f, "0.00", T("Cuánto oscurecen los rincones y uniones también bajo las lámparas (0 = como el juego). Asienta muebles y objetos.", "How much corners and joints darken under lamps too (0 = game default). Grounds furniture and objects.")),
+            Bar(T("TONO DE LA PIEL", "SKIN TONE"), Materiales.TonoPiel, 0.5f, 1f, "0.00", T("Oscurece solo la piel de los cuerpos, que el juego deja casi blanca y se ve quemada bajo las lámparas. No cambia la luz de la sala (1 = como el juego).", "Darkens only the bodies' skin, which the game leaves almost white so it looks blown out under the lamps. Doesn't change the room lighting (1 = game default).")),
+            Bar(T("DISPERSIÓN DE LA PIEL", "SKIN SCATTERING"), Materiales.DispersionPiel, 0.3f, 1.5f, "0.00", T("Cuánto viaja la luz bajo la piel. Menos = poros y pliegues más definidos; más = piel cerosa (1 = como el juego).", "How far light travels under the skin. Lower = sharper pores and folds; higher = waxy skin (1 = game default).")),
+            Bar(T("RELIEVE DE PERSONAJES", "CHARACTER DETAIL"), Materiales.RelievePersonajes, 1f, 3f, "0.00", T("Más relieve en cadáveres, protagonista, familiares y demonios: músculos, venas, arrugas y tela (1 = como el juego).", "More relief on corpses, the protagonist, relatives and demons: muscles, veins, wrinkles and cloth (1 = game default).")),
             Bar(T("FUERZA DEL RELIEVE", "SURFACE DETAIL STRENGTH"), Materiales.RelieveFactor, 1f, 4f, "0.0", T("Cuánto se refuerza el relieve (necesita la casilla RELIEVE DE SUPERFICIES).", "How much surface relief is boosted (needs the SURFACE RELIEF checkbox).")),
             Bar(T("DENSIDAD DEL PASTO", "GRASS DENSITY"), Materiales.PastoCapas, 1f, 2f, "0.0", T("Cuánto más tupido se ve el pasto (necesita la casilla PASTO).", "How much denser the grass looks (needs the GRASS checkbox).")),
             Cas(T("FILTRADO ANISOTRÓPICO", "ANISOTROPIC FILTERING"), Plugin.Aniso, T("Texturas nítidas en suelos y paredes vistos en ángulo (16x).", "Sharp textures on floors and walls seen at an angle (16x).")),
+            Cas(T("CINEMÁTICAS EN ALTA CALIDAD", "HIGH-QUALITY CUTSCENES"), Opciones.CineCalidad, T("El desenfoque de fondo de las cinemáticas en calidad alta: sin contornos claros en hojas y pelo.", "Cutscene background blur at high quality: no bright outlines around leaves and hair.")),
+            Cas(T("FOCO DE LA MESA SUAVE", "SOFT TABLE LIGHT"), Opciones.FocoMesaSuave, T("Agranda el foco de la mesa de autopsias para que la piel no se vea metálica al inspeccionar el cuerpo.", "Enlarges the autopsy table light so skin doesn't look metallic during inspection.")),
+            Cas(T("DETALLE DE PERSONAJES", "CHARACTER DETAIL BOOST"), Materiales.Personajes, T("Activa el relieve extra en todos los personajes animados y su ropa.", "Turns on the extra relief on every animated character and their clothes.")),
+            Cas(T("PASTO REALISTA (3D)", "REALISTIC GRASS (3D)"), PastoReal.Activar, T("Pasto de hojas 3D hecho por el mod, en matas desordenadas sobre tierra. Reemplaza el pasto de capas del juego. Usa más tarjeta de video.", "3D grass blades made by the mod, in natural clumps over dirt. Replaces the game's layered grass. Uses more GPU.")),
+            Cas(T("TIERRA EN VEZ DE PASTO", "DIRT INSTEAD OF GRASS"), Materiales.SueloTierra, T("Afuera, cambia el pasto 3D del juego por suelo de tierra y piedras fotográfico.", "Outside, replaces the game's 3D grass with photographic dirt and stones.")),
+            Cas(T("PELO REALISTA", "REALISTIC HAIR"), Materiales.PeloRealista, T("El pelo usa el shader de pelo del juego: hebras finas y brillo de pelo real en vez de tiras planas.", "Hair uses the game's hair shader: fine strands and real hair shine instead of flat ribbons.")),
+            Cas(T("SANGRE REALISTA", "REALISTIC BLOOD"), Materiales.SangreReal, T("La sangre del drenaje en la mesa se ve roja oscura y mojada en vez de rosada.", "Drained blood on the table looks dark red and wet instead of pink.")),
+            Cas(T("OJOS HÚMEDOS", "WET EYES"), Materiales.OjosHumedos, T("Los ojos reflejan la luz como un ojo real (no cambia los ojos de demonios).", "Eyes catch the light like real eyes (demon eyes are left as is).")),
+            Cas(T("PIEL MATE", "MATTE SKIN"), Materiales.PielMate, T("Quita el aspecto metálico o plástico de algunos cuerpos al inspeccionarlos.", "Removes the metallic or plastic look some bodies have during inspection.")),
             Cas(T("DETALLE DE PIEL", "SKIN DETAIL"), Materiales.Piel, T("Refuerza el microrelieve de la piel en todos los cuerpos.", "Boosts fine skin detail on every body.")),
             Cas(T("RELIEVE DE SUPERFICIES", "SURFACE RELIEF"), Materiales.Relieve, T("Refuerza el relieve de paredes, suelos, piedra y madera.", "Boosts the relief of walls, floors, stone and wood.")),
             Cas(T("BRILLO POR MATERIAL", "MATERIAL SHINE"), Materiales.Brillo, T("Azulejos y cerámica más brillantes, vidrio pulido, metal más pulido, tela mate.", "Shinier tiles and ceramics, polished glass and metal, matte fabric.")),
@@ -103,12 +118,12 @@ namespace MortuaryRealista
                 "DLSS: usa la opción propia del juego (en Linux con Proton deja bordes punteados).\n" +
                 "HDR DE PANTALLA: el juego no lo trae (usa MAPEO TONAL).\n" +
                 "TESELADO Y PARALLAX: el juego no trae esos shaders ni mapas de altura.\n" +
-                "MICRODETALLE DE PAREDES: el juego no trae compilada esa variante del shader.",
+                "MICRODETALLE COMO CAPA APARTE: el juego no trae esa variante del shader (va incluido en las texturas IA de relieve).",
                 "RAY TRACING AND PATH TRACING: need DirectX 12; the game uses DirectX 11.\n" +
                 "DLSS: use the game's own option (on Linux with Proton it shows dotted edges).\n" +
                 "HDR OUTPUT: not supported by the game (use TONE MAPPING).\n" +
                 "TESSELLATION AND PARALLAX: the game lacks those shaders and height maps.\n" +
-                "WALL MICRO DETAIL: the game doesn't include that shader variant.") },
+                "MICRO DETAIL AS A SEPARATE LAYER: the game lacks that shader variant (it's baked into the AI relief textures).") },
         };
         static ConfigEntry<int> CalidadSSGI() => Opciones.CalidadSSGI;
         static ConfigEntry<float> DistanciaDibujado() => Opciones.DistanciaDibujado;
@@ -131,7 +146,7 @@ namespace MortuaryRealista
             public TextMeshProUGUI Ayuda;
             public List<Fila> Filas = new List<Fila>();
             public List<Control> Controles = new List<Control>();
-            public Button[] Presets = new Button[3];
+            public Button[] Presets = new Button[5];
             public bool Activa;
         }
         static readonly List<Pantalla> pantallas = new List<Pantalla>();
@@ -319,9 +334,13 @@ namespace MortuaryRealista
                         y -= 70f;
                         break;
                     case Tipo.Presets:
-                        string[] np = { "ORIGINAL", T("EQUILIBRADO", "BALANCED"), T("MÁXIMO", "MAXIMUM") }, ip = { "original", "equilibrado", "maximo" };
-                        string[] ap = { T("Juego original: el mod no cambia nada.", "Original game: the mod changes nothing."), T("Equilibrado (recomendado): todas las mejoras sin bajar mucho los FPS.", "Balanced (recommended): every improvement without a big FPS hit."), T("Máximo: sombras Ultra, niebla densa, TAA y todo el detalle. Cuesta FPS.", "Maximum: Ultra shadows, dense fog, TAA and full detail. Costs FPS.") };
-                        for (int i = 0; i < 3; i++)
+                        string[] np = { "ORIGINAL", T("BAJO 4 GB", "LOW 4 GB"), T("MEDIO 6 GB", "MEDIUM 6 GB"), T("EQUILIBRADO", "BALANCED"), T("MÁXIMO", "MAXIMUM") }, ip = Opciones.NombresPreset;
+                        string[] ap = { T("Juego original: el mod no cambia nada.", "Original game: the mod changes nothing."),
+                            T("Bajo: para tarjetas de 4 GB de VRAM u 8 GB de RAM. Mejoras de piel, pelo y materiales; sin reflejos ni efectos caros.", "Low: for 4 GB VRAM or 8 GB RAM. Skin, hair and material upgrades; no reflections or costly effects."),
+                            T("Medio: para tarjetas de 6 GB de VRAM. Reflejos y sombras de rincones en calidad media.", "Medium: for 6 GB VRAM cards. Reflections and corner shading at medium quality."),
+                            T("Equilibrado (recomendado con 8 GB de VRAM): todas las mejoras sin bajar mucho los FPS.", "Balanced (recommended with 8 GB VRAM): every improvement without a big FPS hit."),
+                            T("Máximo: sombras Ultra, niebla densa, TAA, pasto 3D y todo el detalle. Para más de 8 GB de VRAM.", "Maximum: Ultra shadows, dense fog, TAA, 3D grass and full detail. For more than 8 GB VRAM.") };
+                        for (int i = 0; i < 5; i++)
                         {
                             var go = Clonar(srcBoton.gameObject, cont, "MR_Preset_" + ip[i]);
                             var b = go.GetComponent<Button>();
@@ -330,7 +349,9 @@ namespace MortuaryRealista
                             b.onClick.AddListener((UnityAction)(() => { Opciones.Preset(nombre); RefrescarTodo(); }));
                             PonerTexto(go, np[i]);
                             var rt = go.GetComponent<RectTransform>();
-                            Centro(rt, new Vector2((i - 1) * COLX, y - 34f), new Vector2(330f, 60f));
+                            Centro(rt, new Vector2((i - 2) * 248f, y - 34f), new Vector2(238f, 60f));
+                            var labp = go.GetComponentInChildren<TextMeshProUGUI>(true);
+                            if (labp != null) { labp.enableAutoSizing = true; labp.fontSizeMax = 30f; labp.fontSizeMin = 16f; labp.enableWordWrapping = false; }
                             p.Presets[i] = b;
                             p.Filas.Add(new Fila { Rt = rt, Ayuda = ap[i], Go = go });
                         }
@@ -526,8 +547,8 @@ namespace MortuaryRealista
         static void MarcarPreset(Pantalla p)
         {
             string actual = Opciones.PresetActual();
-            string[] ip = { "original", "equilibrado", "maximo" };
-            for (int i = 0; i < 3; i++)
+            string[] ip = Opciones.NombresPreset;
+            for (int i = 0; i < ip.Length; i++)
             {
                 var b = p.Presets[i]; if (b == null) continue;
                 var img = b.targetGraphic;
@@ -635,7 +656,7 @@ namespace MortuaryRealista
                     break;
                 }
                 case 6: Pruebas.CapturaPublica(pre + "mod_casilla_pulsada"); break;
-                case 7: p.Presets[1].onClick.Invoke(); break;
+                case 7: p.Presets[3].onClick.Invoke(); break;   // 3 = equilibrado (0 original, 1 bajo, 2 medio, 4 máximo)
                 case 8: p.Scroll.verticalNormalizedPosition = 0.5f; break;
                 case 9: Pruebas.CapturaPublica(pre + "mod_2"); break;
                 case 10: p.Scroll.verticalNormalizedPosition = 0f; break;

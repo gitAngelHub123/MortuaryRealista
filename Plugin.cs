@@ -12,9 +12,10 @@ using UnityEngine.Rendering.HighDefinition;
 
 namespace MortuaryRealista
 {
-    [BepInPlugin("angel.mortuary.terrorcine", "Mortuary Realista", "1.0.0")]
+    [BepInPlugin("angel.mortuary.terrorcine", "Mortuary Realista", Plugin.Version)]
     public class Plugin : BasePlugin
     {
+        public const string Version = "1.0.0";   // única fuente de la versión (atributo y mensajes)
         internal static new ManualLogSource Log;
         internal static ConfigEntry<bool> Activo;
         internal static ConfigEntry<float> Grano, Viñeteo, SuavizadoViñeteo, Aberracion, Exposicion, Contraste, Saturacion, Gamma, TintePorcentaje;
@@ -33,6 +34,7 @@ namespace MortuaryRealista
         {
             Log = base.Log;
             Instancia = this;
+            bool cfgNueva = !System.IO.File.Exists(Config.ConfigFilePath);
             Activo = Config.Bind("General", "Activo", true, "Enciende o apaga todo el efecto");
             TeclaActivar = Config.Bind("General", "TeclaActivar", Key.F8, "Alterna el efecto en vivo");
             TeclaRecargar = Config.Bind("General", "TeclaRecargar", Key.F9, "Relee este archivo de configuración en vivo");
@@ -58,11 +60,15 @@ namespace MortuaryRealista
             TexturasIA.Configurar(Config);
             Realismo.Configurar(Config);
             Materiales.Configurar(Config);
+            Fuego.Configurar(Config);
+            Arboles.Configurar(Config);
+            PastoReal.Configurar(Config);
             Pruebas.Configurar(Config);
             Opciones.Configurar(Config);
             Idioma.Configurar(Config);
             Interfaz.Configurar(Config);
             Portapapeles.Configurar(Config);
+            if (cfgNueva) { try { Opciones.PresetAutomatico(); } catch (System.Exception e) { Log.LogWarning("Ajuste automático: " + e.Message); } }
             TexturasIA.Iniciar();
 
             ClassInjector.RegisterTypeInIl2Cpp<Runner>();
@@ -70,7 +76,7 @@ namespace MortuaryRealista
             UnityEngine.Object.DontDestroyOnLoad(go);
             go.hideFlags = HideFlags.HideAndDontSave;
             go.AddComponent<Runner>();
-            Log.LogInfo("Mortuary Realista 1.0.0 cargado. Opciones → MOD GRÁFICO, F8 post-proceso, F9 recarga la configuración, F10 captura.");
+            Log.LogInfo("Mortuary Realista " + Version + " cargado. Opciones → MOD GRÁFICO, F8 post-proceso, F9 recarga la configuración, F10 captura.");
         }
     }
 

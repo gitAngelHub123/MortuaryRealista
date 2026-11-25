@@ -23,7 +23,7 @@ namespace MortuaryRealista
         internal static ConfigEntry<string> Excluir;
         internal static ConfigEntry<bool> Activar, UsarColor, UsarNormales, LogDetallado, ConservarOriginales;
         internal static ConfigEntry<string> Carpeta;
-        internal static ConfigEntry<int> PresupuestoMB, MsPorCuadro;
+        internal static ConfigEntry<int> PresupuestoMB, MsPorCuadro, TopeBajaPrioridad;
         internal static ConfigEntry<float> UmbralAmbiguo, UmbralZona, Umbral;
         internal static ConfigEntry<UnityEngine.InputSystem.Key> TeclaAlternar;
         internal static bool Encendidas = true;
@@ -38,9 +38,10 @@ namespace MortuaryRealista
         static readonly Dictionary<int, Texture2D> sustitutas = new Dictionary<int, Texture2D>();   // plan B: id original -> nueva
         static readonly List<Texture2D> retener = new List<Texture2D>();
         static bool barridoPendiente;
-        static string carpetaReal;
+        internal static string carpetaReal;
+        internal static bool PackInstalado;
         static long bytesAñadidos;
-        static int reemplazadas, sinCoincidencia, fallos, enPlanB, omitidasPresupuesto;
+        static int reemplazadas, sinCoincidencia, fallos, enPlanB, omitidasPresupuesto, reducidas;
         static float proximoEscaneo = 3f;
         static int escaneosPendientes = 1;
         static int firmaEscena = int.MinValue;
@@ -54,6 +55,7 @@ namespace MortuaryRealista
             UsarColor = cfg.Bind("TexturasIA", "Color", true, "Reemplaza texturas de color (albedo)");
             UsarNormales = cfg.Bind("TexturasIA", "Normales", true, "Reemplaza mapas de normales (relieve)");
             Carpeta = cfg.Bind("TexturasIA", "Carpeta", "", "Carpeta con indice.tsv y los .mtex; vacío = BepInEx/plugins/MortuaryRealista/TexturasIA");
+            TopeBajaPrioridad = cfg.Bind("TexturasIA", "TopeBajaPrioridad", 2048, "Lado máximo de las texturas de objetos (prioridad baja): se cargan desde un mipmap menor para dejar VRAM a paredes, suelos y personajes (0 = sin tope)");
             PresupuestoMB = cfg.Bind("TexturasIA", "PresupuestoMB", -1, "Máximo de VRAM extra (MB) para las texturas nuevas; -1 = automático según la VRAM de la tarjeta");
             MsPorCuadro = cfg.Bind("TexturasIA", "MsPorCuadro", 15, "Tiempo máximo por cuadro dedicado a cargar texturas (evita tirones)");
             Umbral = cfg.Bind("TexturasIA", "UmbralHuella", 22f, "Diferencia máxima (0-255) entre la miniatura del juego y la de la textura IA");
@@ -72,6 +74,7 @@ namespace MortuaryRealista
                 carpetaReal = string.IsNullOrWhiteSpace(Carpeta.Value)
                     ? Path.Combine(Paths.PluginPath, "MortuaryRealista", "TexturasIA") : Carpeta.Value;
                 string idx = Path.Combine(carpetaReal, "indice.tsv");
+                PackInstalado = File.Exists(idx);
                 if (!File.Exists(idx)) { Plugin.Log.LogInfo("Texturas IA: pack de texturas no instalado (opcional): " + idx); return; }
                 indice = new Dictionary<string, List<EntradaTex>>();
                 int n = 0;
@@ -152,7 +155,7 @@ namespace MortuaryRealista
                 {
                     resumenPendiente = false;
                     Plugin.Log.LogInfo("Texturas IA: " + reemplazadas + " reemplazadas (" + enPlanB + " por plan B), +" + (bytesAñadidos >> 20) +
-                        " MB de VRAM, " + sinCoincidencia + " sin coincidencia, " + fallos + " fallos, " + omitidasPresupuesto + " fuera de presupuesto");
+                        " MB de VRAM, " + reducidas + " cargadas a menor tamaño, " + sinCoincidencia + " sin coincidencia, " + fallos + " fallos, " + omitidasPresupuesto + " fuera de presupuesto");
                 }
             }
             catch (Exception e) { Plugin.Log.LogError("Texturas IA: " + e); escaneosPendientes = 0; }
@@ -315,8 +318,12 @@ namespace MortuaryRealista
             string n = e.Nombre;
             bool normal = e.Rol == "normal";
             if (n.Contains("Skin") || n.Contains("ClothesAndArms") || n.Contains("2_meshes_Merge_Pbr")) return normal ? 1 : 0;
+            // pelo: probado 2026-11-24, a 1080p la versión 4K no se distingue (el aspecto lo dan las tiras del modelo) → prioridad baja, solo si sobra VRAM
+            if (n.Contains("Hair") || n.Contains("HAIR") || n.Contains("Transparency") || n.Contains("Beard")) return 6;
             foreach (var k in new[] { "Wall", "Floor", "Tile", "Ceiling", "plane_", "Modules", "Brick", "Street", "SideWalk", "Grass", "Wood", "Door", "Shingles", "Trim", "Carpet", "Concrete" })
                 if (n.IndexOf(k, StringComparison.OrdinalIgnoreCase) >= 0) return normal ? 3 : 2;
+            // objetos que ya venían a 2048 o más: el salto a 4K casi no se ve a 1080p y es lo más caro → al final de la fila
+            if (Math.Max(e.Ancho, e.Alto) >= 2048) return 7;
             return normal ? 5 : 4;
         }
 
@@ -345,6 +352,14 @@ namespace MortuaryRealista
             }
         }
 
+        // bytes de los primeros k niveles de un .mtex (BC7 y BC5: 16 bytes por bloque de 4x4)
+        static long BytesHasta(int W, int H, int k)
+        {
+            long b = 0;
+            for (int i = 0; i < k; i++) b += (long)Math.Max(1, ((W >> i) + 3) / 4) * Math.Max(1, ((H >> i) + 3) / 4) * 16;
+            return b;
+        }
+
         static long TamañoAprox(int w, int h, GraphicsFormat gf)
         {
             long b = GraphicsFormatUtility.ComputeMipmapSize(w, h, gf);
@@ -365,8 +380,24 @@ namespace MortuaryRealista
                 var original = t.graphicsFormat;
                 bool srgb = GraphicsFormatUtility.IsSRGBFormat(original);
                 GraphicsFormat gf = fmt == 1 ? (srgb ? GraphicsFormat.RGBA_BC7_SRGB : GraphicsFormat.RGBA_BC7_UNorm) : GraphicsFormat.RG_BC5_UNorm;
-                long extra = len - TamañoAprox(t.width, t.height, original);
+                // Carga escalonada: se salta k niveles de mip (el .mtex ya los trae) si la textura es de baja prioridad
+                // o si no cabe en el presupuesto, mientras siga siendo más grande que la original.
+                int k = 0;
+                int prio = Prioridad(e);
+                long baseOrig = TamañoAprox(t.width, t.height, original);
+                while (prio >= 4 && TopeBajaPrioridad.Value > 0 && Math.Max(W >> k, H >> k) > TopeBajaPrioridad.Value && (W >> (k + 1)) > t.width) k++;
+                while ((bytesAñadidos + (len - BytesHasta(W, H, k) - baseOrig)) >> 20 > Presupuesto && (W >> (k + 1)) > t.width && mips - k > 1) k++;
+                long extra = len - BytesHasta(W, H, k) - baseOrig;
                 if ((bytesAñadidos + extra) >> 20 > Presupuesto) { omitidasPresupuesto++; return; }
+                if (k > 0)
+                {
+                    int salto = (int)BytesHasta(W, H, k);
+                    var recorte = new byte[28 + len - salto];
+                    Buffer.BlockCopy(datos, 0, recorte, 0, 28);
+                    Buffer.BlockCopy(datos, 28 + salto, recorte, 28, len - salto);
+                    datos = recorte; W >>= k; H >>= k; mips -= k; len -= salto;
+                    reducidas++;
+                }
 
                 var wrapU = t.wrapModeU; var wrapV = t.wrapModeV; var filtro = t.filterMode; int aniso = t.anisoLevel; float sesgo = t.mipMapBias;
                 bool hecho = false;

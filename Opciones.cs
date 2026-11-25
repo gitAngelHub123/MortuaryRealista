@@ -14,8 +14,9 @@ namespace MortuaryRealista
     internal static class Opciones
     {
         internal static ConfigEntry<int> CalidadSombras, NieblaVolumetrica, Antialiasing, CalidadSSR, CalidadSSGI;
-        internal static ConfigEntry<float> HacesLuz, DistanciaDibujado, DesenfoqueMovimiento, DistorsionLente, CompensacionAuto;
-        internal static ConfigEntry<bool> ExposicionAuto, Profundidad;
+        internal static ConfigEntry<float> HacesLuz, DistanciaDibujado, DesenfoqueMovimiento, DistorsionLente, CompensacionAuto, RadioFocoMesa;
+        internal static ConfigEntry<bool> ExposicionAuto, Profundidad, FocoMesaSuave, CineCalidad, CineFisico;
+        internal static ConfigEntry<int> CineMuestras;
 
         static Fog niebla;
         static Exposure exposicion;
@@ -28,6 +29,8 @@ namespace MortuaryRealista
         {
             CalidadSombras = cfg.Bind("Opciones", "CalidadSombras", 0, "Resolución de sombra de cada luz: 0 = la del juego, 1 = Alta (1024), 2 = Ultra (2048)");
             NieblaVolumetrica = cfg.Bind("Opciones", "NieblaVolumetrica", 0, "Niebla volumétrica: 0 = la del juego (apagada), 1 = Ligera, 2 = Densa");
+            FocoMesaSuave = cfg.Bind("Opciones", "FocoMesaSuave", true, "Agranda el foco de la mesa de autopsias (coneLight): sin él, el reflejo diminuto y fuerte hace ver la piel metálica o plástica al inspeccionar el cuerpo");
+            RadioFocoMesa = cfg.Bind("Opciones", "RadioFocoMesa", 1f, "Radio del foco de la mesa con FocoMesaSuave, en metros (el juego usa 0,25)");
             HacesLuz = cfg.Bind("Opciones", "HacesLuz", 1f, "Intensidad de los haces de luz en la niebla (1 = como el juego, 0 = sin haces)");
             Antialiasing = cfg.Bind("Opciones", "Antialiasing", -1, "-1 = el del juego, 0 = ninguno, 1 = FXAA, 2 = SMAA, 3 = TAA");
             CalidadSSR = cfg.Bind("Opciones", "CalidadReflejos", 2, "Calidad de los reflejos en pantalla: 0 Baja, 1 Media, 2 Alta");
@@ -36,6 +39,9 @@ namespace MortuaryRealista
             ExposicionAuto = cfg.Bind("Opciones", "ExposicionAutomatica", false, "Los ojos se adaptan a la oscuridad y a la luz (el juego usa exposición fija)");
             CompensacionAuto = cfg.Bind("Opciones", "CompensacionExposicionAuto", -2.5f, "Ajuste de la exposición automática en EV");
             Profundidad = cfg.Bind("Opciones", "ProfundidadDeCampo", false, "Desenfoque de lo muy cercano y lo lejano, como una cámara de cine");
+            CineCalidad = cfg.Bind("Opciones", "CinematicasAltaCalidad", true, "Cinemáticas: desenfoque de fondo del juego en calidad alta y resolución completa (sin contornos en hojas y pelo)");
+            CineMuestras = cfg.Bind("Opciones", "CinematicasMuestras", 4, "Muestras del desenfoque de cinemáticas con CinematicasAltaCalidad (3 a 16; más = más suave y más caro)");
+            CineFisico = cfg.Bind("Opciones", "CinematicasFisico", false, "Desenfoque físico (nivel Alto de HDRP). Medido 2026-11-24: baja la cinemática del auto de 100 a 26 FPS en RTX 4060 laptop");
             DesenfoqueMovimiento = cfg.Bind("Opciones", "DesenfoqueMovimiento", 0f, "Desenfoque al mover la cámara (0 = apagado, 1 = máximo)");
             DistorsionLente = cfg.Bind("Opciones", "DistorsionLente", 0f, "Curvatura de lente (0 = apagada; negativo = cojín, positivo = barril)");
         }
@@ -90,11 +96,28 @@ namespace MortuaryRealista
             exposicion.limitMin.Override(-3f);
             exposicion.limitMax.Override(12f);
             exposicion.compensation.Override(CompensacionAuto.Value);
-            dof.active = post && Profundidad.Value;
-            dof.focusMode.Override(DepthOfFieldMode.Manual);
-            dof.nearFocusStart.Override(0f); dof.nearFocusEnd.Override(0.35f);
-            dof.farFocusStart.Override(3.5f); dof.farFocusEnd.Override(12f);
-            dof.quality.Override(1);
+            // Sin la opción: solo se sube la calidad del desenfoque que usa el propio juego en las cinemáticas (enfoque y distancias
+            // siguen siendo los del juego). El de baja calidad dejaba un contorno claro alrededor de las hojas de los árboles.
+            dof.active = post && (Profundidad.Value || CineCalidad.Value);
+            bool propio = Profundidad.Value;
+            dof.focusMode.overrideState = propio; dof.focusMode.value = DepthOfFieldMode.Manual;
+            dof.nearFocusStart.overrideState = propio; dof.nearFocusStart.value = 0f;
+            dof.nearFocusEnd.overrideState = propio; dof.nearFocusEnd.value = 0.35f;
+            dof.farFocusStart.overrideState = propio; dof.farFocusStart.value = 3.5f;
+            dof.farFocusEnd.overrideState = propio; dof.farFocusEnd.value = 12f;
+            // Antes se usaba el nivel Alto (2), pero trae desenfoque "físico": medido 100 → 26 FPS en la cinemática del auto.
+            // Ahora nivel personalizado (3 = LevelCount): resolución completa + filtrado de alta calidad (lo que quita el contorno
+            // claro de las hojas) sin el modo físico.
+            if (CineCalidad.Value)
+            {
+                dof.quality.Override(3);
+                int mu = Mathf.Clamp(CineMuestras.Value, 3, 16);
+                dof.m_NearSampleCount.Override(mu); dof.m_FarSampleCount.Override(mu);
+                dof.m_Resolution.Override(DepthOfFieldResolution.Full);
+                dof.m_HighQualityFiltering.Override(true);
+                dof.m_PhysicallyBased.Override(CineFisico.Value);
+            }
+            else dof.quality.Override(1);
             movimiento.active = post && DesenfoqueMovimiento.Value > 0f;
             movimiento.intensity.Override(DesenfoqueMovimiento.Value);
             movimiento.quality.Override(1);
@@ -111,7 +134,7 @@ namespace MortuaryRealista
         }
 
         // ---------- luces y cámara (se reaplica en cada escena) ----------
-        class LuzOriginal { public IntScalableSettingValue Res; public float Dimmer; }
+        class LuzOriginal { public IntScalableSettingValue Res; public float Dimmer; public float Radio; }
         static readonly Dictionary<int, LuzOriginal> luces = new Dictionary<int, LuzOriginal>();
         static readonly Dictionary<int, float> lejanias = new Dictionary<int, float>();
         static readonly Dictionary<int, HDAdditionalCameraData.AntialiasingMode> aaOriginal = new Dictionary<int, HDAdditionalCameraData.AntialiasingMode>();
@@ -126,7 +149,7 @@ namespace MortuaryRealista
                 if (!luces.TryGetValue(id, out var o))
                 {
                     var r = l.shadowResolution;
-                    o = new LuzOriginal { Res = new IntScalableSettingValue { useOverride = r.useOverride, @override = r.@override, level = r.level }, Dimmer = l.volumetricDimmer };
+                    o = new LuzOriginal { Res = new IntScalableSettingValue { useOverride = r.useOverride, @override = r.@override, level = r.level }, Dimmer = l.volumetricDimmer, Radio = l.shapeRadius };
                     luces[id] = o;
                 }
                 if (CalidadSombras.Value > 0)
@@ -142,6 +165,8 @@ namespace MortuaryRealista
                 // varias lámparas del juego traen el aporte a la niebla en 0: se parte de 1 para que los haces aparezcan
                 float baseD = o.Dimmer > 0.01f ? o.Dimmer : 1f;
                 l.volumetricDimmer = Math.Abs(HacesLuz.Value - 1f) < 0.01f ? o.Dimmer : Mathf.Clamp(baseD * HacesLuz.Value, 0f, 16f);
+                // foco de la mesa de autopsias: con radio 0,25 m la piel bajo inspección parece metal (probado 2026-11-24)
+                if (l.name == "coneLight") l.shapeRadius = FocoMesaSuave.Value ? Mathf.Max(o.Radio, RadioFocoMesa.Value) : o.Radio;
                 n++;
             }
             var cam = Camera.main;
@@ -183,20 +208,37 @@ namespace MortuaryRealista
         // valores de cada preset (los usa Preset y PresetActual)
         static List<(ConfigEntryBase, object)> ValoresPreset(string nombre)
         {
-            bool original = nombre == "original", maximo = nombre == "maximo";
+            // bajo = tarjetas de 4 GB de VRAM (y/o 8 GB de RAM); medio = 6 GB; equilibrado = 8 GB; maximo = más de 8 GB
+            bool original = nombre == "original", maximo = nombre == "maximo", bajo = nombre == "bajo", medio = nombre == "medio";
+            int nivel = original ? 0 : bajo ? 1 : medio ? 2 : maximo ? 4 : 3;
             return new List<(ConfigEntryBase, object)>
             {
                 (TexturasIA.Activar, !original), (Realismo.Activar, !original), (Materiales.Activar, !original), (Plugin.Activo, !original),
-                (Realismo.SSR, !original), (CalidadSSR, 2), (Realismo.SSGI, false), (CalidadSSGI, maximo ? 2 : 1),
+                (Realismo.SSR, nivel >= 2), (CalidadSSR, nivel <= 2 ? nivel - 1 < 0 ? 0 : nivel - 1 : 2), (Realismo.SSGI, false), (CalidadSSGI, maximo ? 2 : nivel <= 1 ? 0 : 1),
                 (CalidadSombras, maximo ? 2 : 0), (NieblaVolumetrica, maximo ? 2 : 0), (HacesLuz, maximo ? 1.4f : 1f),
-                (Antialiasing, maximo ? 3 : -1), (Realismo.CalidadAO, original ? -1 : 2), (Plugin.SesgoLod, original ? -1f : maximo ? 3f : 2f),
-                (DistanciaDibujado, maximo ? 2f : 1f), (Realismo.MuestrasPiel, original ? 0 : maximo ? 160 : 80),
-                (Realismo.Tonemapping, original ? 0 : maximo ? 2 : 1), (Realismo.LuzInterior, !original),
-                (Materiales.Pasto, !original), (Materiales.PastoCapas, maximo ? 2f : 1.6f), (Materiales.Relieve, !original),
-                (Materiales.Brillo, !original), (Materiales.Piel, !original), (ExposicionAuto, false), (Profundidad, false),
+                (Antialiasing, maximo ? 3 : -1), (Realismo.CalidadAO, original ? -1 : nivel == 1 ? 0 : nivel == 2 ? 1 : 2), (Plugin.SesgoLod, original ? -1f : nivel == 1 ? 1f : nivel == 2 ? 1.5f : maximo ? 3f : 2f),
+                (DistanciaDibujado, maximo ? 2f : 1f), (Realismo.MuestrasPiel, nivel <= 1 ? 0 : nivel == 2 ? 40 : maximo ? 160 : 80),
+                (Realismo.Tonemapping, original ? 0 : maximo ? 2 : 1), (Realismo.LuzInterior, !original), (Realismo.MicroSombras, nivel >= 2),
+                (Materiales.Pasto, !original), (Materiales.PastoCapas, nivel == 1 ? 1f : nivel == 2 ? 1.3f : maximo ? 2f : 1.6f), (Materiales.Relieve, !original),
+                (Materiales.Brillo, !original), (Materiales.Piel, !original), (Materiales.PielMate, !original), (Materiales.Personajes, !original), (Materiales.OjosHumedos, !original), (Materiales.SangreReal, !original), (Materiales.PeloRealista, !original), (FocoMesaSuave, !original), (ExposicionAuto, false), (Profundidad, false),
                 (DesenfoqueMovimiento, maximo ? 0.25f : 0f), (DistorsionLente, 0f),
+                (CineCalidad, nivel >= 2), (CineMuestras, nivel == 2 ? 3 : 4), (Arboles.Cantidad, nivel <= 1 ? 0 : nivel == 2 ? 20 : 35), (PastoReal.Activar, maximo),
             };
         }
+        internal static readonly string[] NombresPreset = { "original", "bajo", "medio", "equilibrado", "maximo" };
+
+        // Primera instalación (sin archivo de configuración): elige el ajuste según la VRAM y la RAM del equipo.
+        // Solo pone los valores; se aplican cuando el juego carga la primera escena.
+        public static void PresetAutomatico()
+        {
+            int vram = SystemInfo.graphicsMemorySize, ram = SystemInfo.systemMemorySize;
+            string n = vram > 0 && vram < 5000 ? "bajo" : vram > 0 && vram < 7000 ? "medio" : "equilibrado";
+            if (ram > 0 && ram < 9000 && n == "equilibrado") n = "medio";   // 8 GB de RAM: menos carga de texturas a la vez
+            foreach (var (e, v) in ValoresPreset(n)) e.BoxedValue = v;
+            Plugin.Instancia.Config.Save();
+            Plugin.Log.LogInfo($"Primera instalación: VRAM {vram} MB, RAM {ram} MB → ajuste \"{n}\"");
+        }
+
         public static void Preset(string nombre)
         {
             foreach (var (e, v) in ValoresPreset(nombre)) e.BoxedValue = v;
@@ -207,7 +249,7 @@ namespace MortuaryRealista
         // nombre del preset que coincide con la configuración actual (null si ninguno)
         public static string PresetActual()
         {
-            foreach (var n in new[] { "original", "equilibrado", "maximo" })
+            foreach (var n in NombresPreset)
             {
                 bool igual = true;
                 foreach (var (e, v) in ValoresPreset(n))
@@ -400,6 +442,13 @@ namespace MortuaryRealista
             Deslizador("Nivel de detalle (LOD)", Plugin.SesgoLod, 1f, 4f, "0.0", "Modelos detallados a más distancia (1 = como el juego).");
             Deslizador("Distancia de dibujado y sombras", DistanciaDibujado, 1f, 3f, "0.0", "Multiplica cuán lejos se dibujan objetos y sombras.");
             Selector("Dispersión en la piel (SSS)", Realismo.MuestrasPiel, new[] { "Juego", "Alta", "Ultra", "Máxima" }, new[] { 0, 40, 80, 160 }, "Luz que atraviesa la piel: muestras por píxel.");
+            Interruptor("Foco de la mesa suave", FocoMesaSuave, "Agranda el foco de la mesa de autopsias para que la piel no se vea metálica al inspeccionar.");
+            Interruptor("Detalle de personajes", Materiales.Personajes, "Más relieve en todos los personajes animados y su ropa.");
+            Deslizador("   Relieve de personajes", Materiales.RelievePersonajes, 1f, 3f, "0.00", "");
+            Interruptor("Pelo realista", Materiales.PeloRealista, "El pelo usa el shader de pelo del juego: hebras finas y brillo real.");
+            Interruptor("Sangre realista", Materiales.SangreReal, "La sangre de la mesa se ve roja oscura y mojada.");
+            Interruptor("Ojos húmedos", Materiales.OjosHumedos, "Los ojos reflejan la luz como un ojo real.");
+            Interruptor("Piel mate", Materiales.PielMate, "Quita el aspecto metálico o plástico de algunos cuerpos al inspeccionarlos.");
             Interruptor("Detalle de poros en la piel", Materiales.Piel, "Refuerza el microrelieve de la piel en todos los cuerpos.");
             Interruptor("Relieve de superficies", Materiales.Relieve, "Refuerza el relieve de paredes, suelos, piedra y madera.");
             Deslizador("   Fuerza del relieve", Materiales.RelieveFactor, 1f, 4f, "0.0", "");

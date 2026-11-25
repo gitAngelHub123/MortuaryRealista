@@ -59,6 +59,12 @@ namespace MortuaryRealista
         static readonly Queue<string> comandos = new Queue<string>();
         static float proximoComando, revisarArchivo;
         static bool prestado;
+        static readonly Dictionary<int, (Color disp, float escala)> perfilOriginal = new Dictionary<int, (Color, float)>();
+        static readonly List<(SkinnedMeshRenderer r, int i, Material m)> peloOriginal = new List<(SkinnedMeshRenderer, int, Material)>();
+        static readonly List<GameObject> encendidos = new List<GameObject>();
+        static readonly Dictionary<int, float> propOriginal = new Dictionary<int, float>();
+        static readonly List<Light> lucesApagadas = new List<Light>();
+        static readonly List<CustomPassVolume> pasesApagados = new List<CustomPassVolume>();
         static float giroPorSeg, giroHasta; static MFPP.Player giroJugador;
         internal static ConfigEntry<bool> ComandosEnVivo;
         static void Comandos()
@@ -131,6 +137,16 @@ namespace MortuaryRealista
                     Plugin.Log.LogInfo("Comando: " + c + " (tiene=" + (inv != null && inv.hasClipboard) + ", en mano=" + (pi.clipboard != null && pi.clipboard.activeInHierarchy) + ", bloqueo=" + pi.clipboardAnimlock + ")");
                     proximoComando = Time.unscaledTime + 0.5f; return;
                 }
+                if (c == "botones")
+                {
+                    foreach (var b in Resources.FindObjectsOfTypeAll<UnityEngine.UI.Button>())
+                    {
+                        if (b == null || !b.gameObject.activeInHierarchy) continue;
+                        var tmp = b.GetComponentInChildren<TMPro.TMP_Text>();
+                        Plugin.Log.LogInfo($"  botón '{(tmp != null ? tmp.text.Trim() : "-")}' ({b.name})");
+                    }
+                    proximoComando = Time.unscaledTime + 0.3f; return;
+                }
                 if (c.StartsWith("boton "))
                 {
                     string objetivo = c.Substring(6).Trim();
@@ -138,7 +154,567 @@ namespace MortuaryRealista
                     {
                         if (b == null || !b.gameObject.activeInHierarchy) continue;
                         var tmp = b.GetComponentInChildren<TMPro.TMP_Text>();
-                        if (tmp != null && string.Equals(tmp.text.Trim(), objetivo, StringComparison.OrdinalIgnoreCase)) { b.onClick.Invoke(); Plugin.Log.LogInfo("Comando: botón " + objetivo); break; }
+                        if (objetivo.StartsWith("#") ? b.name == objetivo.Substring(1) : tmp != null && string.Equals(tmp.text.Trim(), objetivo, StringComparison.OrdinalIgnoreCase)) { b.onClick.Invoke(); Plugin.Log.LogInfo("Comando: botón " + objetivo); break; }
+                    }
+                    proximoComando = Time.unscaledTime + 0.5f; return;
+                }
+                if (c.StartsWith("luz_off ") || c.StartsWith("luz_on "))
+                {
+                    // luz_off NOMBRE / luz_on NOMBRE: apaga o enciende las luces activas con ese nombre (o cuyo padre se llama así)
+                    bool on = c.StartsWith("luz_on "); string nom = c.Substring(on ? 7 : 8).Trim(); int n = 0;
+                    foreach (var l in Resources.FindObjectsOfTypeAll<Light>())
+                    {
+                        if (l == null || !l.gameObject.scene.IsValid()) continue;
+                        bool coincide = l.name == nom || (l.transform.parent != null && l.transform.parent.name == nom);
+                        if (!coincide) continue;
+                        if (!on && l.enabled && l.gameObject.activeInHierarchy) { l.enabled = false; lucesApagadas.Add(l); n++; }
+                        if (on && lucesApagadas.Contains(l)) { l.enabled = true; lucesApagadas.Remove(l); n++; }
+                    }
+                    Plugin.Log.LogInfo("Comando: " + c + " (" + n + " luces)"); proximoComando = Time.unscaledTime + 0.3f; return;
+                }
+                if (c.StartsWith("luz_prop "))
+                {
+                    // luz_prop NOMBRE clave=valor: sombras=0/1, normalBias, slopeBias, res, mult (multiplica la intensidad), info
+                    var pz = c.Substring(9).Trim().Split(' '); var ci = System.Globalization.CultureInfo.InvariantCulture;
+                    foreach (var hd in Resources.FindObjectsOfTypeAll<HDAdditionalLightData>())
+                    {
+                        if (hd == null || !hd.gameObject.scene.IsValid() || hd.name != pz[0]) continue;
+                        var l = hd.GetComponent<Light>();
+                        if (pz.Length > 1 && pz[1] != "info")
+                        {
+                            var kv = pz[1].Split('='); float v = float.Parse(kv[1], ci);
+                            if (kv[0] == "sombras") hd.EnableShadows(v > 0.5f);
+                            else if (kv[0] == "normalBias") hd.normalBias = v;
+                            else if (kv[0] == "slopeBias") hd.slopeBias = v;
+                            else if (kv[0] == "res") { hd.SetShadowResolutionOverride(true); hd.SetShadowResolution((int)v); }
+                            else if (kv[0] == "mult") hd.intensity = hd.intensity * v;
+                            else if (kv[0] == "radio") hd.shapeRadius = v;
+                        }
+                        Plugin.Log.LogInfo($"  luz_prop {hd.name}: sombras={(l != null ? l.shadows.ToString() : "-")} int={hd.intensity:0.###} unidad={hd.lightUnit} normalBias={hd.normalBias:0.###} slopeBias={hd.slopeBias:0.###} res={hd.shadowResolution.@override} radio={hd.shapeRadius:0.###} ángulo={(l != null ? l.spotAngle : 0):0} alcance={(l != null ? l.range : 0):0.0} contacto={hd.useContactShadow.@override}/{hd.useContactShadow.useOverride} filtro={hd.shadowUpdateMode} pos={hd.transform.position}");
+                    }
+                    proximoComando = Time.unscaledTime + 0.3f; return;
+                }
+                if (c.StartsWith("perfil_piel"))
+                {
+                    // perfil_piel info | perfil_piel disp=x2 (multiplica la distancia de dispersión del original) | perfil_piel escala=x2
+                    var ci = System.Globalization.CultureInfo.InvariantCulture;
+                    foreach (var d in Resources.FindObjectsOfTypeAll<DiffusionProfileSettings>())
+                    {
+                        if (d == null || d.profile == null) continue;
+                        var pr = d.profile; int id = d.GetInstanceID();
+                        if (!perfilOriginal.ContainsKey(id)) perfilOriginal[id] = (pr.scatteringDistance, pr.worldScale);
+                        var o = perfilOriginal[id];
+                        if (c.Contains("disp=x")) { float f = float.Parse(c.Substring(c.IndexOf("disp=x") + 6).Split(' ')[0], ci); pr.scatteringDistance = new Color(o.disp.r * f, o.disp.g * f, o.disp.b * f, o.disp.a); }
+                        if (c.Contains("escala=x")) { float f = float.Parse(c.Substring(c.IndexOf("escala=x") + 8).Split(' ')[0], ci); pr.worldScale = o.escala * f; }
+                        if (c != "perfil_piel info") { pr.Validate(); pr.UpdateKernel(); d.UpdateCache(); }
+                        Plugin.Log.LogInfo($"  perfil {d.name}: dispersión={pr.scatteringDistance} escala={pr.worldScale:0.###} tinte={pr.transmissionTint} radioFiltro={pr.filterRadius:0.##} hash={pr.hash}");
+                    }
+                    Plugin.Log.LogInfo("Comando: " + c); proximoComando = Time.unscaledTime + 0.5f; return;
+                }
+                if (c.StartsWith("pelo_hdrp "))
+                {
+                    // pelo_hdrp on|off: pasa el pelo HDRP/Lit al shader de pelo del juego (HDRP/Hair), clonando un material de pelo ya configurado
+                    bool on = c.EndsWith(" on"); int n = 0;
+                    if (on)
+                    {
+                        Material refPelo = null;
+                        foreach (var m in Resources.FindObjectsOfTypeAll<Material>())
+                            if (m != null && m.shader != null && m.shader.name == "HDRP/Hair" && m.name.Contains("Merge_Pbr")) { refPelo = m; break; }
+                        if (refPelo == null) { Plugin.Log.LogWarning("pelo_hdrp: no hay material de referencia HDRP/Hair"); return; }
+                        foreach (var r in Resources.FindObjectsOfTypeAll<SkinnedMeshRenderer>())
+                        {
+                            if (r == null || !r.gameObject.scene.IsValid()) continue;
+                            var mats = r.sharedMaterials; bool cambio = false;
+                            for (int i = 0; i < mats.Length; i++)
+                            {
+                                var m = mats[i];
+                                if (m == null || m.shader == null || m.shader.name != "HDRP/Lit") continue;
+                                string nm = m.name;
+                                if (!(nm.Contains("Hair") || nm.Contains("HAIR")) || nm.Contains("Scalp") || nm.Contains("Cap")) continue;
+                                var t = m.HasProperty("_BaseColorMap") ? m.GetTexture("_BaseColorMap") : null;
+                                if (t == null) continue;
+                                var nuevo = new Material(refPelo) { name = nm + " (pelo HDRP)" };
+                                nuevo.SetTexture("_BaseColorMap", t);
+                                nuevo.SetTexture("_NormalMap", m.HasProperty("_NormalMap") ? m.GetTexture("_NormalMap") : null);
+                                nuevo.SetTexture("_MaskMap", m.HasProperty("_MaskMap") ? m.GetTexture("_MaskMap") : null);
+                                if (m.HasProperty("_BaseColor")) nuevo.SetColor("_BaseColor", m.GetColor("_BaseColor"));
+                                if (m.HasProperty("_AlphaCutoff") && nuevo.HasProperty("_AlphaClipThreshold")) nuevo.SetFloat("_AlphaClipThreshold", Mathf.Clamp(m.GetFloat("_AlphaCutoff"), 0.05f, 0.6f));
+                                nuevo.hideFlags = HideFlags.DontUnloadUnusedAsset;
+                                peloOriginal.Add((r, i, m)); mats[i] = nuevo; cambio = true; n++;
+                                Plugin.Log.LogInfo($"  pelo_hdrp: {r.name} / {nm} -> HDRP/Hair (corte {m.GetFloat("_AlphaCutoff"):0.00})");
+                            }
+                            if (cambio) r.sharedMaterials = mats;
+                        }
+                    }
+                    else
+                    {
+                        foreach (var (r, i, m) in peloOriginal) { if (r == null) continue; var mats = r.sharedMaterials; if (i < mats.Length) { mats[i] = m; r.sharedMaterials = mats; n++; } }
+                        peloOriginal.Clear();
+                    }
+                    Plugin.Log.LogInfo("Comando: " + c + " (" + n + ")"); proximoComando = Time.unscaledTime + 0.5f; return;
+                }
+                if (c.StartsWith("vista "))
+                {
+                    // vista MATERIAL: lleva al jugador frente al objeto más chico (>0,3 m) con ese material
+                    bool antes = MoverJugador.Value; MoverJugador.Value = true;
+                    try { PrepararVista(c.Substring(6).Trim()); } finally { MoverJugador.Value = antes; }
+                    proximoComando = Time.unscaledTime + 1f; return;
+                }
+                if (c.StartsWith("objeto "))
+                {
+                    // objeto NOMBRE on|off: enciende o apaga (solo para mirar) los objetos con ese nombre; "off" solo apaga los que encendió este comando
+                    var pz = c.Substring(7).Trim(); int sp = pz.LastIndexOf(' '); string nom = pz.Substring(0, sp); bool on = pz.Substring(sp + 1) == "on"; int n = 0;
+                    if (on)
+                    {
+                        foreach (var t in Resources.FindObjectsOfTypeAll<Transform>())
+                            if (t != null && t.gameObject.scene.IsValid() && t.name == nom && !t.gameObject.activeInHierarchy)
+                            {
+                                for (var a = t; a != null; a = a.parent) if (!a.gameObject.activeSelf) { a.gameObject.SetActive(true); encendidos.Add(a.gameObject); }
+                                n++;
+                            }
+                        foreach (var t in Resources.FindObjectsOfTypeAll<Transform>())
+                            if (t != null && t.gameObject.scene.IsValid() && t.name == nom)
+                            {
+                                foreach (var v in t.GetComponentsInChildren<UnityEngine.VFX.VisualEffect>(true)) { v.enabled = true; v.Reinit(); v.Play(); }
+                                string cadena = ""; for (var a = t; a != null; a = a.parent) cadena += a.name + (a.gameObject.activeSelf ? "" : "(apagado)") + " < ";
+                                Plugin.Log.LogInfo("  cadena: " + cadena);
+                            }
+                    }
+                    else { foreach (var g in encendidos) if (g != null && g.name == nom) { g.SetActive(false); n++; } encendidos.RemoveAll(g => g == null || g.name == nom); }
+                    Plugin.Log.LogInfo("Comando: " + c + " (" + n + ")"); proximoComando = Time.unscaledTime + 0.3f; return;
+                }
+                if (c.StartsWith("escena "))
+                {
+                    // escena NOMBRE: carga esa escena del juego (p. ej. Mortuary_Tutorial) para revisarla
+                    string nom = c.Substring(7).Trim(); Plugin.Log.LogInfo("Comando: escena " + nom);
+                    SceneManager.LoadScene(nom); proximoComando = Time.unscaledTime + 3f; return;
+                }
+                if (c.StartsWith("traer "))
+                {
+                    // traer NOMBRE [dist]: pone el objeto con ese nombre (p. ej. un cuerpo) delante de la cámara, apoyado en el suelo, para mirarlo
+                    var pz = c.Substring(6).Trim(); float dist = 1.6f; int sp = pz.LastIndexOf(' ');
+                    if (sp > 0 && float.TryParse(pz.Substring(sp + 1), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float dd)) { dist = dd; pz = pz.Substring(0, sp); }
+                    var cam = Camera.main; if (cam == null) foreach (var cc in Camera.allCameras) if (cc.isActiveAndEnabled) { cam = cc; break; } int n = 0;
+                    foreach (var t in Resources.FindObjectsOfTypeAll<Transform>())
+                    {
+                        if (t == null || !t.gameObject.scene.IsValid() || t.name != pz || n++ > 0) continue;
+                        var fw = cam.transform.forward; fw.y = 0; fw.Normalize();
+                        var p0 = cam.transform.position + fw * dist;
+                        if (Physics.Raycast(p0, Vector3.down, out var hit, 5f)) p0.y = hit.point.y + 0.9f; else p0.y -= 0.7f;
+                        Vector3 desfase = Vector3.zero;   // la malla puede estar lejos del origen del objeto (cuerpo dentro de un cajón)
+                        foreach (var sk in t.GetComponentsInChildren<SkinnedMeshRenderer>(true)) if (sk != null && sk.name.Contains("Body") && sk.rootBone != null) { desfase = sk.rootBone.position - t.position; desfase.y = 0; break; }
+                        t.position = p0 - desfase; t.gameObject.SetActive(true);
+                        foreach (var sk in t.GetComponentsInChildren<SkinnedMeshRenderer>(true))
+                        {
+                            if (sk == null) continue;
+                            var rb = sk.rootBone;
+                            Plugin.Log.LogInfo($"  traer: {sk.name} raíz={(rb != null ? rb.name : "-")} dentro={(rb != null && rb.IsChildOf(t))} centro={sk.bounds.center} activo={sk.gameObject.activeInHierarchy}");
+                            if (rb != null && !rb.IsChildOf(t)) rb.position += p0 - sk.bounds.center;
+                            sk.updateWhenOffscreen = true;
+                        }
+                    }
+                    Plugin.Log.LogInfo("Comando: " + c + " (" + n + ")"); proximoComando = Time.unscaledTime + 0.5f; return;
+                }
+                if (c.StartsWith("cinematica"))
+                {
+                    // cinematicas: lista las cinemáticas (PlayableDirector); cinematica N [segundo]: la reproduce desde ese segundo
+                    var lista = new List<UnityEngine.Playables.PlayableDirector>();
+                    foreach (var d in Resources.FindObjectsOfTypeAll<UnityEngine.Playables.PlayableDirector>()) if (d != null && d.gameObject.scene.IsValid()) lista.Add(d);
+                    if (c == "cinematicas")
+                        for (int i = 0; i < lista.Count; i++) { var d = lista[i]; Plugin.Log.LogInfo($"  cinemática {i + 1}: {d.name} padre={(d.transform.parent != null ? d.transform.parent.name : "-")} activa={d.isActiveAndEnabled} asset={(d.playableAsset != null ? d.playableAsset.name : "-")} dura={d.duration:0.0} s estado={d.state} t={d.time:0.0}"); }
+                    else
+                    {
+                        var pz = c.Substring(11).Trim().Split(' '); int k = int.Parse(pz[0]) - 1; var d = lista[k];
+                        d.gameObject.SetActive(true); d.enabled = true;
+                        d.time = pz.Length > 1 ? double.Parse(pz[1], System.Globalization.CultureInfo.InvariantCulture) : 0; d.Play();
+                        Plugin.Log.LogInfo($"Comando: cinemática {d.name} desde {d.time:0.0} s");
+                    }
+                    proximoComando = Time.unscaledTime + 0.5f; return;
+                }
+                if (c.StartsWith("tiempo "))
+                {
+                    // tiempo X: escala de tiempo del juego (0 = congelar para capturar)
+                    Time.timeScale = float.Parse(c.Substring(7).Trim(), System.Globalization.CultureInfo.InvariantCulture);
+                    Plugin.Log.LogInfo("Comando: " + c); proximoComando = Time.unscaledTime + 0.3f; return;
+                }
+                if (c.StartsWith("posicion "))
+                {
+                    // posicion x,y,z x,y,z: pone la cámara del jugador en el primer punto mirando al segundo
+                    var ci = System.Globalization.CultureInfo.InvariantCulture; var pz = c.Substring(9).Trim().Split(' ');
+                    Vector3 V(string t) { var q = t.Split(','); return new Vector3(float.Parse(q[0], ci), float.Parse(q[1], ci), float.Parse(q[2], ci)); }
+                    Vector3 pos = V(pz[0]), centro = V(pz[1]);
+                    var jug = UnityEngine.Object.FindObjectOfType<MFPP.Player>();
+                    if (jug != null && Camera.main != null)
+                    {
+                        var cc2 = jug.GetComponent<CharacterController>(); if (cc2 != null) cc2.enabled = false;
+                        jug.transform.position += pos - Camera.main.transform.position;
+                        if (cc2 != null) cc2.enabled = true;
+                        var dir = (centro - pos).normalized;
+                        var ang = new Vector2(Mathf.Atan2(dir.x, dir.z) * Mathf.Rad2Deg, Mathf.Asin(dir.y) * Mathf.Rad2Deg);
+                        jug.TargetLookAngles = ang; jug.LookAngles = ang;
+                        Plugin.Log.LogInfo($"Comando: posicion (MFPP) cámara {Camera.main.transform.position} ángulos {ang}"); proximoComando = Time.unscaledTime + 0.5f; return;
+                    }
+                    var cam = Camera.main.transform; var raiz = cam.root; var cc = raiz.GetComponentInChildren<CharacterController>();
+                    if (cc != null) cc.enabled = false;
+                    var plano = centro - pos; plano.y = 0; if (plano.sqrMagnitude > 0.01f) raiz.rotation = Quaternion.LookRotation(plano.normalized);
+                    raiz.position += pos - cam.position; cam.LookAt(centro);
+                    if (cc != null) cc.enabled = true;
+                    Plugin.Log.LogInfo("Comando: " + c); proximoComando = Time.unscaledTime + 0.5f; return;
+                }
+                if (c.StartsWith("ir "))
+                {
+                    // ir NOMBRE [dist] [altura]: lleva al jugador frente al objeto con ese nombre (aunque esté apagado), mirándolo
+                    var pz = c.Substring(3).Trim().Split('|'); string nom = pz[0].Trim(); var ci = System.Globalization.CultureInfo.InvariantCulture;
+                    float dist = pz.Length > 1 ? float.Parse(pz[1], ci) : 2f, alto = pz.Length > 2 ? float.Parse(pz[2], ci) : 0.3f; int n = 0;
+                    foreach (var t in Resources.FindObjectsOfTypeAll<Transform>())
+                    {
+                        if (t == null || !t.gameObject.scene.IsValid() || t.name != nom || n++ > 0) continue;
+                        var cam = Camera.main.transform; var raiz = cam.root; var cc = raiz.GetComponentInChildren<CharacterController>();
+                        Vector3 centro = t.position, mejor = Vector3.forward; float md = -1;
+                        for (int i = 0; i < 8; i++) { var dir = Quaternion.Euler(0, i * 45f, 0) * Vector3.forward; float d = Physics.Raycast(centro + Vector3.up * 0.5f, dir, out var h, 4f) ? h.distance : 4f; if (d > md) { md = d; mejor = dir; } }
+                        var pos = centro + mejor * Mathf.Min(dist, md * 0.9f) + Vector3.up * alto;
+                        MoverCamara(pos, centro);
+                        Plugin.Log.LogInfo($"Comando: ir {nom}: jugador en {pos} mirando {centro}");
+                    }
+                    if (n == 0) Plugin.Log.LogInfo("Comando: ir: no encontré " + nom);
+                    proximoComando = Time.unscaledTime + 0.5f; return;
+                }
+                if (c == "inspeccion_objetos" || c.StartsWith("inspeccionar_obj ") || c == "desinspeccionar")
+                {
+                    // inspeccion_objetos: lista los ItemInspection (malla del mundo y malla que se muestra al inspeccionar) con sus materiales
+                    // inspeccionar_obj NOMBRE: el jugador inspecciona ese objeto como si lo tomara; desinspeccionar: lo suelta
+                    string MatInfo(Renderer r)
+                    {
+                        if (r == null) return "-";
+                        string t = r.name + " activo=" + r.gameObject.activeInHierarchy + " bloque=" + r.HasPropertyBlock() + " capa=" + r.gameObject.layer + ":";
+                        foreach (var m in r.sharedMaterials)
+                        {
+                            if (m == null) continue;
+                            string f(string k) => m.HasProperty(k) ? m.GetFloat(k).ToString("0.##") : "-";
+                            t += $" {m.name}[{m.shader.name}] met={f("_Metallic")} metMax={f("_MetallicRemapMax")} lisoMin={f("_SmoothnessRemapMin")} lisoMax={f("_SmoothnessRemapMax")} liso={f("_Smoothness")} mask={(m.HasProperty("_MaskMap") && m.GetTexture("_MaskMap") != null ? m.GetTexture("_MaskMap").name : "-")}";
+                        }
+                        return t;
+                    }
+                    if (c == "inspeccion_objetos")
+                    {
+                        foreach (var ii in Resources.FindObjectsOfTypeAll<ItemInspection>())
+                        {
+                            if (ii == null || !ii.gameObject.scene.IsValid()) continue;
+                            Plugin.Log.LogInfo($"  ItemInspection {ii.name} id={ii.itemID} activo={ii.gameObject.activeInHierarchy} | mio: {MatInfo(ii.myObject)} | muestra: {MatInfo(ii.swapObject)}");
+                        }
+                    }
+                    else
+                    {
+                        var pi2 = UnityEngine.Object.FindObjectOfType<PlayerInteraction>();
+                        if (c == "desinspeccionar") { if (pi2 != null) pi2.UnInspect(false, false); }
+                        else
+                        {
+                            string q = c.Substring(17).Trim(); GameObject go = null;
+                            foreach (var t in Resources.FindObjectsOfTypeAll<Transform>()) if (t != null && t.gameObject.scene.IsValid() && t.name == q) { go = t.gameObject; break; }
+                            if (go == null || pi2 == null) Plugin.Log.LogWarning("inspeccionar_obj: no encontrado " + q + " (jugador " + (pi2 != null) + ")");
+                            else
+                            {
+                                for (var tr = go.transform; tr != null; tr = tr.parent) if (!tr.gameObject.activeSelf) tr.gameObject.SetActive(true);
+                                pi2.InspectItem(go);
+                            }
+                        }
+                    }
+                    Plugin.Log.LogInfo("Comando: " + c); proximoComando = Time.unscaledTime + 1f; return;
+                }
+                if (c.StartsWith("mats_de "))
+                {
+                    // mats_de NOMBRE: materiales de todas las mallas bajo el objeto con ese nombre, con metal y brillo
+                    string q = c.Substring(8).Trim(); int n = 0;
+                    foreach (var t in Resources.FindObjectsOfTypeAll<Transform>())
+                    {
+                        if (t == null || !t.gameObject.scene.IsValid() || t.name != q || n++ > 0) continue;
+                        foreach (var r in t.GetComponentsInChildren<Renderer>(true))
+                            foreach (var m in r.sharedMaterials)
+                            {
+                                if (m == null) { Plugin.Log.LogInfo($"  {r.name}: (material vacío)"); continue; }
+                                string f(string k) => m.HasProperty(k) ? m.GetFloat(k).ToString("0.##") : "-";
+                                Plugin.Log.LogInfo($"  {r.name} activo={r.gameObject.activeInHierarchy} / {m.name} [{m.shader.name}] met={f("_Metallic")} metMax={f("_MetallicRemapMax")} lisoMax={f("_SmoothnessRemapMax")} matID={f("_MaterialID")} normal={f("_NormalScale")}");
+                            }
+                    }
+                    Plugin.Log.LogInfo("Comando: " + c); proximoComando = Time.unscaledTime + 0.3f; return;
+                }
+                if (c.StartsWith("malla "))
+                {
+                    string q = c.Substring(6).Trim();
+                    foreach (var mf in Resources.FindObjectsOfTypeAll<MeshFilter>())
+                        if (mf != null && mf.gameObject.scene.IsValid() && mf.name == q && mf.sharedMesh != null)
+                        {
+                            var r = mf.GetComponent<Renderer>(); string mats = ""; if (r != null) foreach (var m in r.sharedMaterials) mats += (m != null ? m.name : "null") + ",";
+                            Plugin.Log.LogInfo($"  malla {q}: legible={mf.sharedMesh.isReadable} vértices={mf.sharedMesh.vertexCount} submallas={mf.sharedMesh.subMeshCount} mats={mats} col={(mf.GetComponent<Collider>() != null ? mf.GetComponent<Collider>().GetType().Name : "-")}");
+                        }
+                    Plugin.Log.LogInfo("Comando: " + c); proximoComando = Time.unscaledTime + 0.3f; return;
+                }
+                if (c.StartsWith("rotar "))
+                {
+                    // rotar NOMBRE x,y,z: suma esa rotación (grados, ejes locales) al objeto activo con ese nombre
+                    var pz = c.Substring(6).Trim(); int k = pz.LastIndexOf(' '); var ci = System.Globalization.CultureInfo.InvariantCulture;
+                    string q = pz.Substring(0, k); var v = pz.Substring(k + 1).Split(',');
+                    foreach (var t in Resources.FindObjectsOfTypeAll<Transform>())
+                        if (t != null && t.gameObject.scene.IsValid() && t.gameObject.activeInHierarchy && t.name == q)
+                        { t.Rotate(float.Parse(v[0], ci), float.Parse(v[1], ci), float.Parse(v[2], ci), Space.Self); Plugin.Log.LogInfo($"  rotar {q}: {t.localEulerAngles}"); }
+                    Plugin.Log.LogInfo("Comando: " + c); proximoComando = Time.unscaledTime + 0.3f; return;
+                }
+                if (c.StartsWith("diag_render "))
+                {
+                    // diag_render NOMBRE: capa, máscara de capas de luz y pases personalizados (CustomPassVolume) de la escena
+                    string q = c.Substring(12).Trim();
+                    foreach (var r in Resources.FindObjectsOfTypeAll<Renderer>())
+                        if (r != null && r.gameObject.scene.IsValid() && r.name == q)
+                            Plugin.Log.LogInfo($"  {r.name} activo={r.gameObject.activeInHierarchy} capa={r.gameObject.layer}({LayerMask.LayerToName(r.gameObject.layer)}) renderingLayerMask={r.renderingLayerMask} sombras={r.shadowCastingMode} recibe={r.receiveShadows} sondas={r.reflectionProbeUsage}/{r.lightProbeUsage}");
+                    foreach (var v in Resources.FindObjectsOfTypeAll<CustomPassVolume>())
+                    {
+                        if (v == null || !v.gameObject.scene.IsValid()) continue;
+                        string pases = ""; foreach (var cp in v.customPasses) if (cp != null) pases += cp.name + "[" + cp.GetIl2CppType().Name + (cp.enabled ? "" : ",off") + "] ";
+                        Plugin.Log.LogInfo($"  CustomPassVolume {v.name} activo={v.isActiveAndEnabled} global={v.isGlobal} punto={v.injectionPoint} pases: {pases}");
+                    }
+                    foreach (var cam in Resources.FindObjectsOfTypeAll<Camera>())
+                        if (cam != null && cam.gameObject.scene.IsValid() && cam.isActiveAndEnabled) Plugin.Log.LogInfo($"  cámara {cam.name} mascara={cam.cullingMask} prof={cam.depth} destino={(cam.targetTexture != null ? cam.targetTexture.name : "pantalla")}");
+                    Plugin.Log.LogInfo("Comando: " + c); proximoComando = Time.unscaledTime + 0.3f; return;
+                }
+                if (c.StartsWith("mat_color "))
+                {
+                    // mat_color TEXTO _Prop r,g,b[,a]: pone ese color en los materiales cuyo nombre contiene TEXTO
+                    var pz = c.Substring(10).Trim().Split(' '); var ci = System.Globalization.CultureInfo.InvariantCulture; var v = pz[2].Split(','); int n = 0;
+                    var col = new Color(float.Parse(v[0], ci), float.Parse(v[1], ci), float.Parse(v[2], ci), v.Length > 3 ? float.Parse(v[3], ci) : 1f);
+                    foreach (var m in Resources.FindObjectsOfTypeAll<Material>()) if (m != null && m.name.Contains(pz[0]) && m.HasProperty(pz[1])) { m.SetColor(pz[1], col); n++; }
+                    Plugin.Log.LogInfo("Comando: " + c + " (" + n + " materiales)"); proximoComando = Time.unscaledTime + 0.3f; return;
+                }
+                if (c == "luces_on" || c == "luces_info")
+                {
+                    // luces_info: estado de cada interruptor; luces_on: acciona los que están apagados (toggle = false)
+                    int n = 0;
+                    foreach (var ls in UnityEngine.Object.FindObjectsOfType<LightSwitch>())
+                    {
+                        if (ls == null) continue;
+                        Plugin.Log.LogInfo($"  interruptor {ls.name} zona={ls.zone} encendido={ls.toggle}");
+                        if (c == "luces_on" && !ls.toggle) { try { ls.ToggleLight(); n++; } catch (Exception ex) { Plugin.Log.LogWarning("Interruptor: " + ex.Message); } }
+                    }
+                    Plugin.Log.LogInfo("Comando: " + c + " (" + n + " accionados)"); proximoComando = Time.unscaledTime + 1f; return;
+                }
+                if (c.StartsWith("donde ") || c == "camara")
+                {
+                    // donde NOMBRE: posición y dirección de todos los objetos con ese nombre; camara: posición y dirección de la cámara
+                    if (c == "camara") { var ct = Camera.main.transform; Plugin.Log.LogInfo($"  cámara pos={ct.position.x:0.00},{ct.position.y:0.00},{ct.position.z:0.00} mira={ct.forward.x:0.00},{ct.forward.y:0.00},{ct.forward.z:0.00}"); }
+                    else
+                    {
+                        string q = c.Substring(6).Trim();
+                        foreach (var t in Resources.FindObjectsOfTypeAll<Transform>())
+                            if (t != null && t.gameObject.scene.IsValid() && t.name == q)
+                            {
+                                var r = t.GetComponentInChildren<Renderer>(); string caja = r != null ? $" caja={r.bounds.center} tam={r.bounds.size}" : "";
+                                Plugin.Log.LogInfo($"  donde {q} padre={(t.parent != null ? t.parent.name : "-")} pos={t.position.x:0.00},{t.position.y:0.00},{t.position.z:0.00}{caja}");
+                            }
+                    }
+                    Plugin.Log.LogInfo("Comando: " + c); proximoComando = Time.unscaledTime + 0.3f; return;
+                }
+                if (c.StartsWith("limites "))
+                {
+                    // limites NOMBRE: caja (bounds) de las mallas con ese nombre
+                    string q = c.Substring(8).Trim();
+                    foreach (var r in Resources.FindObjectsOfTypeAll<Renderer>())
+                        if (r != null && r.gameObject.scene.IsValid() && r.name == q) Plugin.Log.LogInfo($"  {r.name} padre={(r.transform.parent != null ? r.transform.parent.name : "-")} activo={r.gameObject.activeInHierarchy} centro={r.bounds.center} tamaño={r.bounds.size} pos={r.transform.position} escala={r.transform.lossyScale}");
+                    Plugin.Log.LogInfo("Comando: " + c); proximoComando = Time.unscaledTime + 0.3f; return;
+                }
+                if (c.StartsWith("buscar_obj "))
+                {
+                    // buscar_obj TEXTO: objetos cuyo nombre contiene TEXTO (sin distinguir mayúsculas), con sus materiales
+                    string q = c.Substring(11).Trim(); int n = 0;
+                    foreach (var t in Resources.FindObjectsOfTypeAll<Transform>())
+                    {
+                        if (t == null || !t.gameObject.scene.IsValid() || t.name.IndexOf(q, StringComparison.OrdinalIgnoreCase) < 0 || n++ > 40) continue;
+                        var r = t.GetComponent<Renderer>(); string mats = "";
+                        if (r != null) foreach (var m in r.sharedMaterials) if (m != null) mats += m.name + " [" + m.shader.name + "] ";
+                        Plugin.Log.LogInfo($"  objeto {t.name} padre={(t.parent != null ? t.parent.name : "-")} activo={t.gameObject.activeInHierarchy} {mats}");
+                    }
+                    Plugin.Log.LogInfo("Comando: " + c + " (" + n + ")"); proximoComando = Time.unscaledTime + 0.3f; return;
+                }
+                if (c.StartsWith("vfx_suelto "))
+                {
+                    // vfx_suelto NOMBRE: saca ese efecto de su escena de cinemática (sin activar al padre) y lo reproduce solo
+                    string nom = c.Substring(11).Trim(); int n = 0; bool delante = nom.EndsWith(" delante"); if (delante) nom = nom.Substring(0, nom.Length - 8);
+                    string padre = null; int bar = nom.IndexOf('/'); if (bar > 0) { padre = nom.Substring(0, bar); nom = nom.Substring(bar + 1); }   // PADRE/NOMBRE
+                    foreach (var v in Resources.FindObjectsOfTypeAll<UnityEngine.VFX.VisualEffect>())
+                    {
+                        if (v == null || !v.gameObject.scene.IsValid() || v.name != nom || (padre != null && (v.transform.parent == null || v.transform.parent.name != padre)) || n++ > 0) continue;
+                        var t = v.transform; var pos = t.position; var rot = t.rotation;
+                        t.SetParent(null, true); t.position = pos; t.rotation = rot;
+                        if (delante && Camera.main != null) { var ct = Camera.main.transform; t.position = ct.position + ct.forward * 0.35f - ct.up * 0.05f; t.rotation = Quaternion.identity; }
+                        v.gameObject.SetActive(true); v.enabled = true; v.Reinit(); v.Play(); v.SendEvent("OnPlay");
+                        if (delante) t.localScale = Vector3.one * 6f;   // llama pequeña (encendedor): más grande para verla
+                    }
+                    Plugin.Log.LogInfo("Comando: " + c + " (" + n + ")"); proximoComando = Time.unscaledTime + 0.5f; return;
+                }
+                if (c.StartsWith("cerca"))
+                {
+                    // cerca [R]: mallas a menos de R m de la cámara con sus materiales, shader, metal y brillo
+                    float R = c.Length > 6 ? float.Parse(c.Substring(6).Trim(), System.Globalization.CultureInfo.InvariantCulture) : 4f;
+                    var cam = Camera.main; Vector3 pc = cam != null ? cam.transform.position : Vector3.zero; int n = 0;
+                    var lista = new List<(float d, string t)>();
+                    foreach (var r in Resources.FindObjectsOfTypeAll<Renderer>())
+                    {
+                        if (r == null || !r.gameObject.scene.IsValid() || !r.gameObject.activeInHierarchy || !r.enabled) continue;
+                        float d = Vector3.Distance(r.bounds.ClosestPoint(pc), pc); if (d > R) continue;
+                        foreach (var m in r.sharedMaterials)
+                        {
+                            if (m == null) continue;
+                            string f(string k) => m.HasProperty(k) ? m.GetFloat(k).ToString("0.##") : "-";
+                            lista.Add((d, $"  d={d:0.0} {r.GetType().Name} {r.name} / {m.name} id {m.GetInstanceID()} [{m.shader.name}] met={f("_Metallic")} metMax={f("_MetallicRemapMax")} liso={f("_Smoothness")} lisoMin={f("_SmoothnessRemapMin")} lisoMax={f("_SmoothnessRemapMax")} matID={f("_MaterialID")} mask={(m.HasProperty("_MaskMap") && m.GetTexture("_MaskMap") != null)}"));
+                        }
+                    }
+                    lista.Sort((a, b) => a.d.CompareTo(b.d));
+                    foreach (var x in lista) if (n++ < 60) Plugin.Log.LogInfo(x.t);
+                    Plugin.Log.LogInfo("Comando: " + c + " (" + lista.Count + ")"); proximoComando = Time.unscaledTime + 0.3f; return;
+                }
+                if (c.StartsWith("props "))
+                {
+                    // props MATERIAL: todas las propiedades del shader de los materiales con ese nombre exacto (o id)
+                    string q = c.Substring(6).Trim(); int n = 0;
+                    foreach (var m in Resources.FindObjectsOfTypeAll<Material>())
+                    {
+                        if (m == null || (m.name != q && m.GetInstanceID().ToString() != q) || n++ > 0) continue;
+                        var sh = m.shader; var sb = new System.Text.StringBuilder($"props {m.name} id {m.GetInstanceID()} [{sh.name}] claves: {string.Join(",", m.shaderKeywords)}\n");
+                        for (int i = 0; i < sh.GetPropertyCount(); i++)
+                        {
+                            string pn = sh.GetPropertyName(i); var ty = sh.GetPropertyType(i);
+                            string v = ty == UnityEngine.Rendering.ShaderPropertyType.Texture ? (m.GetTexture(pn) != null ? m.GetTexture(pn).name : "null")
+                                : ty == UnityEngine.Rendering.ShaderPropertyType.Color ? m.GetColor(pn).ToString()
+                                : ty == UnityEngine.Rendering.ShaderPropertyType.Vector ? m.GetVector(pn).ToString() : m.GetFloat(pn).ToString("0.###");
+                            sb.Append($"    {pn} ({sh.GetPropertyDescription(i)}) = {v}\n");
+                        }
+                        Plugin.Log.LogInfo(sb.ToString());
+                    }
+                    Plugin.Log.LogInfo("Comando: " + c + " (" + n + ")"); proximoComando = Time.unscaledTime + 0.3f; return;
+                }
+                if (c == "efectos")
+                {
+                    // efectos: VFX Graph y sistemas de partículas de la escena (fuego, humo...) con su distancia
+                    var cam = Camera.main; Vector3 pc = cam != null ? cam.transform.position : Vector3.zero; int n = 0;
+                    foreach (var v in Resources.FindObjectsOfTypeAll<UnityEngine.VFX.VisualEffect>())
+                    {
+                        if (v == null || !v.gameObject.scene.IsValid()) continue; n++;
+                        string ex = "";
+                        foreach (var k in new[] { "Intensity", "intensity", "Size", "Rate", "SpawnRate", "Color", "Lifetime", "Speed", "Alpha", "Scale" })
+                            if (v.HasFloat(k)) ex += k + "=" + v.GetFloat(k).ToString("0.##") + " "; else if (v.HasVector4(k)) ex += k + "=" + v.GetVector4(k) + " ";
+                        Plugin.Log.LogInfo($"  vfx {v.name} padre={(v.transform.parent != null ? v.transform.parent.name : "-")} activo={v.isActiveAndEnabled} d={Vector3.Distance(v.transform.position, pc):0.0} asset={(v.visualEffectAsset != null ? v.visualEffectAsset.name : "-")} vivas={v.aliveParticleCount} expuestas: {ex}");
+                    }
+                    foreach (var ps in Resources.FindObjectsOfTypeAll<ParticleSystem>())
+                    {
+                        if (ps == null || !ps.gameObject.scene.IsValid()) continue; n++;
+                        var pr = ps.GetComponent<ParticleSystemRenderer>();
+                        Plugin.Log.LogInfo($"  partículas {ps.name} padre={(ps.transform.parent != null ? ps.transform.parent.name : "-")} activo={ps.gameObject.activeInHierarchy} d={Vector3.Distance(ps.transform.position, pc):0.0} mat={(pr != null && pr.sharedMaterial != null ? pr.sharedMaterial.name + " [" + pr.sharedMaterial.shader.name + "]" : "-")}");
+                    }
+                    Plugin.Log.LogInfo("Comando: efectos (" + n + ")"); proximoComando = Time.unscaledTime + 0.3f; return;
+                }
+                if (c.StartsWith("buscar_mat "))
+                {
+                    // buscar_mat TEXTO: objetos (mallas y calcomanías) cuyo material o shader contiene TEXTO, con distancia a la cámara
+                    string q = c.Substring(11).Trim(); var cam = Camera.main; Vector3 pc = cam != null ? cam.transform.position : Vector3.zero; int n = 0;
+                    foreach (var r in Resources.FindObjectsOfTypeAll<Renderer>())
+                    {
+                        if (r == null || !r.gameObject.scene.IsValid()) continue;
+                        foreach (var m in r.sharedMaterials)
+                            if (m != null && (m.name.Contains(q) || m.shader.name.Contains(q)) && n++ < 40)
+                                Plugin.Log.LogInfo($"  malla {r.name} padre={(r.transform.parent != null ? r.transform.parent.name : "-")} activa={r.gameObject.activeInHierarchy && r.enabled} d={Vector3.Distance(r.bounds.center, pc):0.0} / {m.name} [{m.shader.name}]");
+                    }
+                    foreach (var dp in Resources.FindObjectsOfTypeAll<DecalProjector>())
+                    {
+                        if (dp == null || !dp.gameObject.scene.IsValid() || dp.material == null) continue;
+                        var m = dp.material;
+                        if ((m.name.Contains(q) || m.shader.name.Contains(q) || q == "*") && n++ < 80)
+                            Plugin.Log.LogInfo($"  calcomanía {dp.name} padre={(dp.transform.parent != null ? dp.transform.parent.name : "-")} activa={dp.isActiveAndEnabled} d={Vector3.Distance(dp.transform.position, pc):0.0} / {m.name} opacidad={dp.fadeFactor:0.00}");
+                    }
+                    Plugin.Log.LogInfo("Comando: " + c + " (" + n + ")"); proximoComando = Time.unscaledTime + 0.3f; return;
+                }
+                if (c.StartsWith("mat_prop "))
+                {
+                    // mat_prop TEXTO _Propiedad=valor (o x1.5 para multiplicar el valor original): todos los materiales cuyo nombre contiene TEXTO
+                    var pz = c.Substring(9).Trim().Split(' '); var kv = pz[1].Split('='); var ci = System.Globalization.CultureInfo.InvariantCulture; int n = 0;
+                    foreach (var m in Resources.FindObjectsOfTypeAll<Material>())
+                    {
+                        if (m == null || !m.name.Contains(pz[0]) || !m.HasProperty(kv[0])) continue;
+                        int id = m.GetInstanceID() * 31 + kv[0].GetHashCode();
+                        if (!propOriginal.ContainsKey(id)) propOriginal[id] = m.GetFloat(kv[0]);
+                        m.SetFloat(kv[0], kv[1].StartsWith("x") ? propOriginal[id] * float.Parse(kv[1].Substring(1), ci) : float.Parse(kv[1], ci)); n++;
+                    }
+                    Plugin.Log.LogInfo("Comando: " + c + " (" + n + " materiales)"); proximoComando = Time.unscaledTime + 0.3f; return;
+                }
+                if (c.StartsWith("piel_prop "))
+                {
+                    // piel_prop _Propiedad=valor: cambia esa propiedad en todos los materiales de piel cargados (solo pruebas)
+                    var kv = c.Substring(10).Split('='); float val = float.Parse(kv[1], System.Globalization.CultureInfo.InvariantCulture); int n = 0;
+                    foreach (var m in Resources.FindObjectsOfTypeAll<Material>())
+                        if (m != null && (m.name.Contains("Skin") || m.name == "SKIN") && m.HasProperty(kv[0])) { m.SetFloat(kv[0], val); n++; }
+                    Plugin.Log.LogInfo("Comando: " + c + " (" + n + " materiales)"); proximoComando = Time.unscaledTime + 0.3f; return;
+                }
+                if (c.StartsWith("inspec"))
+                {
+                    // inspecciones = lista; inspeccionar N = entra; inspeccion_salir = sale; inspeccion_info = materiales y luces cerca
+                    var jug = UnityEngine.Object.FindObjectOfType<MFPP.Player>();
+                    Vector3 pj = jug != null ? jug.transform.position : Vector3.zero;
+                    var lista = new List<Inspect>();
+                    foreach (var ins in Resources.FindObjectsOfTypeAll<Inspect>())
+                        if (ins != null && ins.gameObject.scene.IsValid() && ins.gameObject.activeInHierarchy) lista.Add(ins);
+                    lista.Sort((a, b) => Vector3.Distance(a.transform.position, pj).CompareTo(Vector3.Distance(b.transform.position, pj)));
+                    if (c == "inspecciones")
+                        for (int i = 0; i < lista.Count && i < 25; i++)
+                            Plugin.Log.LogInfo($"  inspección {i + 1}: {lista[i].name} padre={(lista[i].transform.parent != null ? lista[i].transform.parent.name : "-")} d={Vector3.Distance(lista[i].transform.position, pj):0.0} tipo={lista[i].inspectType} nodoCuerpo={lista[i].bodyInspectionNode}");
+                    else if (c.StartsWith("inspeccionar ")) { string arg = c.Substring(13).Trim(); int k = int.TryParse(arg, out int kn) ? kn - 1 : lista.FindIndex(x => x.name == arg); lista[k].RunEvent(); Plugin.Log.LogInfo("Comando: inspeccionar " + lista[k].name); }
+                    else if (c == "inspeccion_salir") { foreach (var ins in lista) ins.LeaveInteract(); }
+                    else if (c == "inspeccion_pases" || c == "inspeccion_pases_off" || c == "inspeccion_pases_on")
+                    {
+                        foreach (var v in Resources.FindObjectsOfTypeAll<CustomPassVolume>())
+                        {
+                            if (v == null || !v.gameObject.scene.IsValid()) continue;
+                            if (c == "inspeccion_pases_off" && v.enabled) { v.enabled = false; pasesApagados.Add(v); }
+                            if (c == "inspeccion_pases_on" && pasesApagados.Contains(v)) v.enabled = true;
+                            string ps = "";
+                            foreach (var cp in v.customPasses) if (cp != null) ps += cp.name + "(" + cp.GetIl2CppType().Name + (cp.enabled ? "" : ",off") + ") ";
+                            Plugin.Log.LogInfo($"  pase {v.name} padre={(v.transform.parent != null ? v.transform.parent.name : "-")} activo={v.isActiveAndEnabled} global={v.isGlobal} inyección={v.injectionPoint} {ps}");
+                        }
+                        if (c == "inspeccion_pases_on") pasesApagados.Clear();
+                    }
+                    else if (c == "inspeccion_info")
+                    {
+                        var cam = Camera.main; Vector3 pc = cam != null ? cam.transform.position : pj;
+                        foreach (var r in Resources.FindObjectsOfTypeAll<Renderer>())
+                        {
+                            if (r == null || !r.gameObject.scene.IsValid() || !r.gameObject.activeInHierarchy || !r.enabled) continue;
+                            if (Vector3.Distance(r.bounds.ClosestPoint(pc), pc) > 2.5f) continue;
+                            string s0 = "";
+                            foreach (var m in r.sharedMaterials)
+                            {
+                                if (m == null) continue;
+                                if (!m.name.Contains("Skin")) { Plugin.Log.LogInfo($"  material {r.name} ({r.GetIl2CppType().Name}, capa {r.gameObject.layer}) / {m.name} shader={m.shader.name} q={m.renderQueue}"); continue; }
+                                s0 = m.shader.name;
+                                string s = r.name + " / " + m.name + " [" + s0 + "]:";
+                                foreach (var p in new[] { "_Metallic", "_Smoothness", "_SmoothnessRemapMin", "_SmoothnessRemapMax", "_MaterialID", "_DetailSmoothnessScale", "_DetailNormalScale", "_ReceivesSSR" })
+                                    if (m.HasProperty(p)) s += $" {p}={m.GetFloat(p):0.00}";
+                                s += " mask=" + (m.HasProperty("_MaskMap") && m.GetTexture("_MaskMap") != null ? m.GetTexture("_MaskMap").name : "-");
+                                s += " kw=" + string.Join(",", m.shaderKeywords);
+                                for (int pi2 = 0; pi2 < m.shader.GetPropertyCount(); pi2++)
+                                {
+                                    string pn = m.shader.GetPropertyName(pi2);
+                                    if (pn.IndexOf("Emiss", StringComparison.OrdinalIgnoreCase) < 0 && pn.IndexOf("Rim", StringComparison.OrdinalIgnoreCase) < 0 && pn.IndexOf("Fresnel", StringComparison.OrdinalIgnoreCase) < 0) continue;
+                                    var tp = m.shader.GetPropertyType(pi2);
+                                    s += " " + pn + "=" + (tp == UnityEngine.Rendering.ShaderPropertyType.Color || tp == UnityEngine.Rendering.ShaderPropertyType.Vector ? m.GetVector(pn).ToString() : tp == UnityEngine.Rendering.ShaderPropertyType.Texture ? (m.GetTexture(pn) != null ? m.GetTexture(pn).name : "-") : m.GetFloat(pn).ToString("0.###"));
+                                }
+                                var mpb = new MaterialPropertyBlock(); r.GetPropertyBlock(mpb);
+                                s += " bloque=" + (mpb.isEmpty ? "vacío" : "CON VALORES emis=" + mpb.GetVector("_EmissiveColor"));
+                                Plugin.Log.LogInfo("  piel " + s);
+                            }
+                        }
+                        foreach (var l in Resources.FindObjectsOfTypeAll<Light>())
+                        {
+                            if (l == null || !l.gameObject.scene.IsValid() || !l.isActiveAndEnabled) continue;
+                            float d = Vector3.Distance(l.transform.position, pc);
+                            if (d > 6f) continue;
+                            Plugin.Log.LogInfo($"  luz {l.name} padre={(l.transform.parent != null ? l.transform.parent.name : "-")} tipo={l.type} int={l.intensity:0.0} d={d:0.0} color={l.color}");
+                        }
                     }
                     proximoComando = Time.unscaledTime + 0.5f; return;
                 }
@@ -439,6 +1015,19 @@ namespace MortuaryRealista
             }
         }
 
+        // mueve al jugador (controlador MFPP del juego) para que su cámara quede en pos mirando a centro
+        static void MoverCamara(Vector3 pos, Vector3 centro)
+        {
+            var jug = UnityEngine.Object.FindObjectOfType<MFPP.Player>();
+            if (jug == null || Camera.main == null) return;
+            var cc = jug.GetComponent<CharacterController>(); if (cc != null) cc.enabled = false;
+            jug.transform.position += pos - Camera.main.transform.position;
+            if (cc != null) cc.enabled = true;
+            var dir = (centro - pos).normalized;
+            var ang = new Vector2(Mathf.Atan2(dir.x, dir.z) * Mathf.Rad2Deg, Mathf.Asin(dir.y) * Mathf.Rad2Deg);
+            jug.TargetLookAngles = ang; jug.LookAngles = ang;
+        }
+
         static bool PrepararVista(string material)
         {
             if (material.StartsWith("cuerpo") && int.TryParse(material.Substring(6), out int nc)) return PrepararCuerpo(nc);
@@ -448,9 +1037,10 @@ namespace MortuaryRealista
             foreach (var r in UnityEngine.Object.FindObjectsOfType<Renderer>())
             {
                 if (r == null || !r.enabled || !r.gameObject.activeInHierarchy) continue;
+                bool porObjeto = material.StartsWith("obj:");   // vista obj:NOMBRE = por nombre del objeto
                 foreach (var m in r.sharedMaterials)
                 {
-                    if (m == null || !m.name.Contains(material)) continue;
+                    if (m == null || (porObjeto ? r.name != material.Substring(4) : !m.name.Contains(material))) continue;
                     float tam = r.bounds.size.magnitude;
                     if (tam > 0.3f && tam < mejorTam) { mejorTam = tam; objetivo = r; }
                 }
